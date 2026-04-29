@@ -1,0 +1,36 @@
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { CaptureScreen } from './src/screens/CaptureScreen';
+import { LibraryScreen } from './src/screens/LibraryScreen';
+import { SettingsScreen } from './src/screens/SettingsScreen';
+import { PremiumTheme } from './src/theme/premiumTheme';
+
+const Tab = createBottomTabNavigator();
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <NavigationContainer
+        theme={{
+          ...DarkTheme,
+          colors: {
+            ...DarkTheme.colors,
+            background: PremiumTheme.colors.background,
+            card: PremiumTheme.colors.card,
+            text: PremiumTheme.colors.text,
+            primary: PremiumTheme.colors.accent,
+          },
+        }}
+      >
+        <StatusBar style="light" />
+        <Tab.Navigator screenOptions={{ headerShown: false }}>
+          <Tab.Screen name="Capture" component={CaptureScreen} />
+          <Tab.Screen name="Library" component={LibraryScreen} />
+          <Tab.Screen name="Settings" component={SettingsScreen} />
+        </Tab.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
+  );
+}
