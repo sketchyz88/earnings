@@ -1,2 +1,2 @@
-# earnings
-earnings application to track tips made at work 
+# shot tracer
+tracing my golf shots 
