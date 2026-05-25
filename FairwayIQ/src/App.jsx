@@ -4,8 +4,8 @@ const PLAYBACK_PRESETS = [0.25, 0.5, 0.75, 1];
 const STEPS = [
   { id: 0, label: "Import", title: "Choose video" },
   { id: 1, label: "Impact", title: "Mark ball" },
-  { id: 2, label: "Landing", title: "Set finish" },
-  { id: 3, label: "Shape", title: "Curve shot" },
+  { id: 2, label: "Apex", title: "Set curve" },
+  { id: 3, label: "Landing", title: "Set finish" },
 ];
 const PRODUCT_DROPS = [
   {
@@ -56,6 +56,7 @@ function App() {
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
+  const [apexPoint, setApexPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
   const [impactFrame, setImpactFrame] = useState(null);
   const [landingFrame, setLandingFrame] = useState(null);
@@ -63,8 +64,6 @@ function App() {
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [fps, setFps] = useState(60);
   const [curveSettings, setCurveSettings] = useState({
-    apexLift: 18,
-    sideBend: 0,
     ballSpeed: 62,
     flightTime: 1.25,
     glow: 82,
@@ -83,33 +82,19 @@ function App() {
   }, [playbackRate]);
 
   const currentFrame = Math.max(0, Math.round(timelineValue * fps));
-  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
-  const readyToTrace = Boolean(sourceUrl && startPoint && endPoint && impactTime != null);
+  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !apexPoint ? 2 : !endPoint ? 3 : 4;
+  const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
 
-  const trajectorySettings = useMemo(() => {
-    if (!startPoint || !endPoint) {
-      return {
-        lift: curveSettings.apexLift,
-        bend: curveSettings.sideBend,
-        bendLimit: 26,
-      };
-    }
-
-    return getSafeTrajectorySettings(startPoint, endPoint, curveSettings);
-  }, [curveSettings, endPoint, startPoint]);
-
   const apexHandle = useMemo(() => {
-    if (!startPoint || !endPoint) return null;
-
-    return buildBallFlightPoint(startPoint, endPoint, 0.5, trajectorySettings);
-  }, [endPoint, startPoint, trajectorySettings]);
+    return apexPoint;
+  }, [apexPoint]);
 
   const fullTracePoints = useMemo(() => {
-    if (!startPoint || !endPoint || impactTime == null) return [];
+    if (!startPoint || !apexPoint || !endPoint || impactTime == null) return [];
 
-    return buildBallFlightPoints(startPoint, endPoint, trajectorySettings, impactTime, curveSettings.flightTime);
-  }, [startPoint, endPoint, trajectorySettings, impactTime, curveSettings.flightTime]);
+    return buildManualTracePoints(startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime);
+  }, [startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime]);
 
   const visibleTracePoints = useMemo(() => {
     if (!readyToTrace) return [];
@@ -149,6 +134,7 @@ function App() {
     setImpactFrame(null);
     setLandingFrame(null);
     setStartPoint(null);
+    setApexPoint(null);
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
@@ -211,9 +197,19 @@ function App() {
       setImpactTime(time);
       setImpactFrame(Math.round(time * fps));
       setStartPoint(point);
+      setApexPoint((current) => current ?? defaultApexFromStart(point));
       setPlacementMode(null);
       setSelectedHandle("start");
-      setStatus("Start point locked. Now scrub to where the ball finishes and tap Mark Landing.");
+      setStatus("Start point locked. Step 2: tap Set Apex and place the highest point of the ball flight.");
+      return;
+    }
+
+    if (placementMode === "apex") {
+      const point = getOverlayPoint(event);
+      setApexPoint(point);
+      setPlacementMode(null);
+      setSelectedHandle("apex");
+      setStatus("Apex locked. Step 3: scrub to where the ball lands or disappears and tap Mark Landing.");
       return;
     }
 
@@ -226,7 +222,7 @@ function App() {
       setCurveSettings((current) => ({ ...current, flightTime }));
       setPlacementMode(null);
       setSelectedHandle("end");
-      setStatus("Trace is ready. Drag the white apex dot or use height, bend, and speed to match the real ball flight.");
+      setStatus("Trace is ready. Drag the start, apex, or landing dot until it matches the shot.");
     }
   }
 
@@ -244,19 +240,13 @@ function App() {
       setStartPoint(point);
       return;
     }
+    if (dragRef.current === "apex") {
+      setApexPoint(point);
+      return;
+    }
     if (dragRef.current === "end") {
       setEndPoint(point);
       return;
-    }
-    if (dragRef.current === "apex" && startPoint && endPoint) {
-      const midX = (startPoint.x + endPoint.x) / 2;
-      const midY = (startPoint.y + endPoint.y) / 2;
-      const safeSettings = getSafeTrajectorySettings(startPoint, endPoint, curveSettings);
-      setCurveSettings((current) => ({
-        ...current,
-        apexLift: clamp(midY - point.y, 0, 44),
-        sideBend: clamp(point.x - midX, -safeSettings.bendLimit, safeSettings.bendLimit),
-      }));
     }
   }
 
@@ -269,10 +259,11 @@ function App() {
     setImpactFrame(null);
     setLandingFrame(null);
     setStartPoint(null);
+    setApexPoint(null);
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
-    setStatus("Trace reset. Scrub to impact and place the ball start point again.");
+    setStatus("Trace reset. Scrub to impact and place the start, apex, and landing points again.");
   }
 
   async function exportTracerSnapshot() {
@@ -546,8 +537,8 @@ function App() {
                         {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
                         {startPoint ? <TraceHandle point={startPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
-                        {endPoint ? <TraceHandle point={endPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                         {apexHandle ? <TraceHandle point={apexHandle} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                        {endPoint ? <TraceHandle point={endPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
                     </div>
                   </>
@@ -622,12 +613,29 @@ function App() {
 
                 <article className={activeStep === 2 ? "instruction-card active" : "instruction-card"}>
                   <span>02</span>
+                  <h3>Set apex</h3>
+                  <p>Tap the highest point of the shot. This controls the curve directly.</p>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!startPoint}
+                    onClick={() => {
+                      setPlacementMode("apex");
+                      setStatus("Tap the highest point of the tracer. You can drag it again later.");
+                    }}
+                  >
+                    Mark Apex
+                  </button>
+                </article>
+
+                <article className={activeStep === 3 ? "instruction-card active" : "instruction-card"}>
+                  <span>03</span>
                   <h3>Set landing</h3>
                   <p>Scrub forward to where the ball finishes, then tap the landing point.</p>
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={!startPoint}
+                    disabled={!apexPoint}
                     onClick={() => {
                       setPlacementMode("end");
                       setStatus("Tap where the ball landed or disappeared. You can adjust the curve after.");
@@ -637,23 +645,21 @@ function App() {
                   </button>
                 </article>
 
-                <article className={activeStep === 3 ? "instruction-card active" : "instruction-card"}>
-                  <span>03</span>
+                <article className={readyToTrace ? "instruction-card active" : "instruction-card"}>
+                  <span>04</span>
                   <h3>Shape the flight</h3>
-                  <p>Drag the dots or tune the sliders until the red line matches the shot.</p>
+                  <p>Drag any dot. The replay and export use this exact same path.</p>
                   <div className="tiny-grid">
                     <button className="secondary-button" type="button" onClick={jumpToImpact} disabled={!readyToTrace}>Go to Impact</button>
-                    <button className="secondary-button" type="button" onClick={resetTrace} disabled={!startPoint && !endPoint}>Reset</button>
+                    <button className="secondary-button" type="button" onClick={resetTrace} disabled={!startPoint && !apexPoint && !endPoint}>Reset</button>
                   </div>
                 </article>
               </div>
 
               <div className="shape-panel">
-                <RangeField label="Apex height" value={curveSettings.apexLift} min={0} max={44} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, apexLift: value }))} />
-                <RangeField label="Draw / fade bend" value={curveSettings.sideBend} min={-trajectorySettings.bendLimit} max={trajectorySettings.bendLimit} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, sideBend: value }))} />
                 <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
                 <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
-                <p className="shape-note">Curve is now locked to a one-way golf-flight path, so it cannot loop back on itself.</p>
+                <p className="shape-note">Use the dots for shape. Use speed for how fast the tracer appears during replay/export.</p>
               </div>
 
               <div className="speed-panel">
@@ -672,6 +678,7 @@ function App() {
 
               <div className="anchor-grid">
                 <div><span>Impact</span><strong>{impactFrame ?? "--"}</strong></div>
+                <div><span>Apex</span><strong>{apexPoint ? "Set" : "--"}</strong></div>
                 <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
                 <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
                 <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
@@ -717,27 +724,20 @@ function RangeField({ label, value, min, max, disabled, onChange }) {
   );
 }
 
-function getSafeTrajectorySettings(start, end, settings) {
-  const distance = Math.hypot(end.x - start.x, end.y - start.y);
-  const verticalTravel = Math.abs(end.y - start.y);
-  const bendLimit = Math.round(clamp(distance * 0.32, 5, 24));
-  const liftLimit = clamp(verticalTravel * 0.55 + distance * 0.18, 10, 44);
-
+function defaultApexFromStart(start) {
   return {
-    lift: clamp(settings.apexLift, 0, liftLimit),
-    bend: clamp(settings.sideBend, -bendLimit, bendLimit),
-    bendLimit,
+    x: clamp(start.x + 18, 0, 100),
+    y: clamp(start.y - 28, 0, 100),
   };
 }
 
-function buildBallFlightPoints(start, end, settings, impactTime, flightTime) {
+function buildManualTracePoints(start, apex, end, impactTime, flightTime) {
   const points = [];
   const totalSamples = 72;
 
   for (let index = 0; index <= totalSamples; index += 1) {
     const t = index / totalSamples;
-    const visualT = easeOutCubic(t);
-    const point = buildBallFlightPoint(start, end, visualT, settings);
+    const point = quadraticPoint(start, apex, end, t);
     points.push({
       ...point,
       time: impactTime + flightTime * t,
@@ -747,24 +747,13 @@ function buildBallFlightPoints(start, end, settings, impactTime, flightTime) {
   return points;
 }
 
-function buildBallFlightPoint(start, end, t, settings) {
-  const baseX = lerp(start.x, end.x, t);
-  const baseY = lerp(start.y, end.y, t);
-  const launchRise = Math.sin(Math.PI * t);
-  const sideCurve = Math.sin(Math.PI * t) * settings.bend;
+function quadraticPoint(start, apex, end, t) {
+  const inv = 1 - t;
 
   return {
-    x: clamp(baseX + sideCurve, 0, 100),
-    y: clamp(baseY - settings.lift * launchRise, 0, 100),
+    x: clamp(inv * inv * start.x + 2 * inv * t * apex.x + t * t * end.x, 0, 100),
+    y: clamp(inv * inv * start.y + 2 * inv * t * apex.y + t * t * end.y, 0, 100),
   };
-}
-
-function lerp(start, end, t) {
-  return start + (end - start) * t;
-}
-
-function easeOutCubic(t) {
-  return 1 - Math.pow(1 - t, 3);
 }
 
 function estimateFlightTime(start, end, speed) {

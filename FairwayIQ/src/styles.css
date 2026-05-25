@@ -545,18 +545,20 @@ code {
 
 .trace-handle {
   cursor: grab;
+  pointer-events: auto;
 }
 
 .trace-handle circle:first-child {
   fill: rgba(255, 255, 255, 0.96);
   stroke: var(--red);
-  stroke-width: 0.45;
+  stroke-width: 0.6;
   filter: drop-shadow(0 0 8px rgba(255, 45, 36, 0.7));
 }
 
 .trace-handle circle:last-child {
   fill: var(--red);
   stroke: none;
+  pointer-events: none;
 }
 
 .trace-handle.apex circle:first-child {
