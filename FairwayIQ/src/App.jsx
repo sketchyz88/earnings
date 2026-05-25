@@ -63,8 +63,8 @@ function App() {
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [fps, setFps] = useState(60);
   const [curveSettings, setCurveSettings] = useState({
-    apexLift: 30,
-    sideBend: 6,
+    apexLift: 18,
+    sideBend: 0,
     ballSpeed: 62,
     flightTime: 1.25,
     glow: 82,
@@ -87,39 +87,29 @@ function App() {
   const readyToTrace = Boolean(sourceUrl && startPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
 
+  const trajectorySettings = useMemo(() => {
+    if (!startPoint || !endPoint) {
+      return {
+        lift: curveSettings.apexLift,
+        bend: curveSettings.sideBend,
+        bendLimit: 26,
+      };
+    }
+
+    return getSafeTrajectorySettings(startPoint, endPoint, curveSettings);
+  }, [curveSettings, endPoint, startPoint]);
+
   const apexHandle = useMemo(() => {
     if (!startPoint || !endPoint) return null;
 
-    const midX = (startPoint.x + endPoint.x) / 2;
-    const midY = (startPoint.y + endPoint.y) / 2;
-    const dx = endPoint.x - startPoint.x;
-    const dy = endPoint.y - startPoint.y;
-    const length = Math.max(Math.hypot(dx, dy), 0.001);
-    const normalX = -dy / length;
-    const normalY = dx / length;
-
-    return {
-      x: clamp(midX + normalX * curveSettings.sideBend, -10, 110),
-      y: clamp(midY + normalY * curveSettings.sideBend - curveSettings.apexLift - Math.abs(dx) * 0.08, -12, 112),
-    };
-  }, [startPoint, endPoint, curveSettings.apexLift, curveSettings.sideBend]);
+    return buildBallFlightPoint(startPoint, endPoint, 0.5, trajectorySettings);
+  }, [endPoint, startPoint, trajectorySettings]);
 
   const fullTracePoints = useMemo(() => {
-    if (!startPoint || !endPoint || !apexHandle || impactTime == null) return [];
+    if (!startPoint || !endPoint || impactTime == null) return [];
 
-    const points = [];
-    const totalSamples = 54;
-    for (let index = 0; index <= totalSamples; index += 1) {
-      const t = index / totalSamples;
-      const eased = 1 - Math.pow(1 - t, 1.35);
-      const point = quadraticPoint(startPoint, apexHandle, endPoint, eased);
-      points.push({
-        ...point,
-        time: impactTime + curveSettings.flightTime * t,
-      });
-    }
-    return points;
-  }, [startPoint, endPoint, apexHandle, impactTime, curveSettings.flightTime]);
+    return buildBallFlightPoints(startPoint, endPoint, trajectorySettings, impactTime, curveSettings.flightTime);
+  }, [startPoint, endPoint, trajectorySettings, impactTime, curveSettings.flightTime]);
 
   const visibleTracePoints = useMemo(() => {
     if (!readyToTrace) return [];
@@ -132,9 +122,9 @@ function App() {
   }, [activeStep, curveSettings.flightTime, fullTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
 
   const guidePath = useMemo(() => {
-    if (!startPoint || !endPoint || !apexHandle) return "";
-    return `M ${startPoint.x} ${startPoint.y} Q ${apexHandle.x} ${apexHandle.y} ${endPoint.x} ${endPoint.y}`;
-  }, [apexHandle, endPoint, startPoint]);
+    if (fullTracePoints.length < 2) return "";
+    return buildSmoothPath(fullTracePoints);
+  }, [fullTracePoints]);
 
   const tracePath = useMemo(() => buildSmoothPath(visibleTracePoints), [visibleTracePoints]);
 
@@ -261,10 +251,11 @@ function App() {
     if (dragRef.current === "apex" && startPoint && endPoint) {
       const midX = (startPoint.x + endPoint.x) / 2;
       const midY = (startPoint.y + endPoint.y) / 2;
+      const safeSettings = getSafeTrajectorySettings(startPoint, endPoint, curveSettings);
       setCurveSettings((current) => ({
         ...current,
-        apexLift: clamp(midY - point.y, 0, 70),
-        sideBend: clamp(point.x - midX, -42, 42),
+        apexLift: clamp(midY - point.y, 0, 44),
+        sideBend: clamp(point.x - midX, -safeSettings.bendLimit, safeSettings.bendLimit),
       }));
     }
   }
@@ -658,10 +649,11 @@ function App() {
               </div>
 
               <div className="shape-panel">
-                <RangeField label="Apex height" value={curveSettings.apexLift} min={0} max={70} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, apexLift: value }))} />
-                <RangeField label="Draw / fade bend" value={curveSettings.sideBend} min={-42} max={42} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, sideBend: value }))} />
+                <RangeField label="Apex height" value={curveSettings.apexLift} min={0} max={44} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, apexLift: value }))} />
+                <RangeField label="Draw / fade bend" value={curveSettings.sideBend} min={-trajectorySettings.bendLimit} max={trajectorySettings.bendLimit} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, sideBend: value }))} />
                 <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
                 <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
+                <p className="shape-note">Curve is now locked to a one-way golf-flight path, so it cannot loop back on itself.</p>
               </div>
 
               <div className="speed-panel">
@@ -725,12 +717,54 @@ function RangeField({ label, value, min, max, disabled, onChange }) {
   );
 }
 
-function quadraticPoint(start, control, end, t) {
-  const inv = 1 - t;
+function getSafeTrajectorySettings(start, end, settings) {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const verticalTravel = Math.abs(end.y - start.y);
+  const bendLimit = Math.round(clamp(distance * 0.32, 5, 24));
+  const liftLimit = clamp(verticalTravel * 0.55 + distance * 0.18, 10, 44);
+
   return {
-    x: inv * inv * start.x + 2 * inv * t * control.x + t * t * end.x,
-    y: inv * inv * start.y + 2 * inv * t * control.y + t * t * end.y,
+    lift: clamp(settings.apexLift, 0, liftLimit),
+    bend: clamp(settings.sideBend, -bendLimit, bendLimit),
+    bendLimit,
   };
+}
+
+function buildBallFlightPoints(start, end, settings, impactTime, flightTime) {
+  const points = [];
+  const totalSamples = 72;
+
+  for (let index = 0; index <= totalSamples; index += 1) {
+    const t = index / totalSamples;
+    const visualT = easeOutCubic(t);
+    const point = buildBallFlightPoint(start, end, visualT, settings);
+    points.push({
+      ...point,
+      time: impactTime + flightTime * t,
+    });
+  }
+
+  return points;
+}
+
+function buildBallFlightPoint(start, end, t, settings) {
+  const baseX = lerp(start.x, end.x, t);
+  const baseY = lerp(start.y, end.y, t);
+  const launchRise = Math.sin(Math.PI * t);
+  const sideCurve = Math.sin(Math.PI * t) * settings.bend;
+
+  return {
+    x: clamp(baseX + sideCurve, 0, 100),
+    y: clamp(baseY - settings.lift * launchRise, 0, 100),
+  };
+}
+
+function lerp(start, end, t) {
+  return start + (end - start) * t;
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
 }
 
 function estimateFlightTime(start, end, speed) {
@@ -852,15 +886,8 @@ function buildSmoothPath(points) {
 
   let path = `M ${points[0].x} ${points[0].y}`;
   for (let index = 0; index < points.length - 1; index += 1) {
-    const p0 = points[index - 1] || points[index];
-    const p1 = points[index];
     const p2 = points[index + 1];
-    const p3 = points[index + 2] || p2;
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-    path += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
+    path += ` L ${p2.x} ${p2.y}`;
   }
   return path;
 }
@@ -870,19 +897,8 @@ function drawSmoothCanvasPath(context, points, width, height) {
   context.beginPath();
   context.moveTo((points[0].x / 100) * width, (points[0].y / 100) * height);
 
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const p0 = points[index - 1] || points[index];
-    const p1 = points[index];
-    const p2 = points[index + 1];
-    const p3 = points[index + 2] || p2;
-    context.bezierCurveTo(
-      ((p1.x + (p2.x - p0.x) / 6) / 100) * width,
-      ((p1.y + (p2.y - p0.y) / 6) / 100) * height,
-      ((p2.x - (p3.x - p1.x) / 6) / 100) * width,
-      ((p2.y - (p3.y - p1.y) / 6) / 100) * height,
-      (p2.x / 100) * width,
-      (p2.y / 100) * height,
-    );
+  for (let index = 1; index < points.length; index += 1) {
+    context.lineTo((points[index].x / 100) * width, (points[index].y / 100) * height);
   }
   context.stroke();
 }
