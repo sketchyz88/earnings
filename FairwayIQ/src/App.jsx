@@ -425,9 +425,9 @@ function App() {
       <section id="top" className="hero-grid">
         <div className="hero-copy">
           <p className="hero-script">The short game. Shorter.</p>
-          <h1>Golf fits and shot traces for the ones who almost had it.</h1>
+          <h1>Golf clothing and shot tracing built for everyday players.</h1>
           <p>
-            ifonlyicouldputt is building a premium short-game clothing line and a simple tracer studio for turning real golf videos into clean red ball-flight edits.
+            ifonlyicouldputt is a golf brand building premium short-game apparel and a simple tracer studio for turning real swing videos into clean red ball-flight edits.
           </p>
           <div className="hero-actions">
             <a className="primary-button" href="#tracker">Open shot tracer</a>
