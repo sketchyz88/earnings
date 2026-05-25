@@ -49,6 +49,8 @@ function App() {
   const [timelineValue, setTimelineValue] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(0.5);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [exportState, setExportState] = useState("idle");
+  const [exportProgress, setExportProgress] = useState(0);
   const [videoError, setVideoError] = useState("");
   const [status, setStatus] = useState("Import or record one swing video. Then the editor walks you through the shot trace one step at a time.");
 
@@ -150,6 +152,8 @@ function App() {
     setTimelineValue(0);
     setPlaybackRate(0.5);
     setIsPlaying(false);
+    setExportState("idle");
+    setExportProgress(0);
     setVideoError("");
     setImpactTime(null);
     setImpactFrame(null);
@@ -307,6 +311,122 @@ function App() {
     link.href = url;
     link.download = "ifonlyicouldputt-shot-tracer.png";
     link.click();
+  }
+
+  async function exportTracerVideo() {
+    const video = videoRef.current;
+    if (!video || !readyToTrace) return;
+
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
+      setExportState("error");
+      setStatus("This browser cannot export a video from the web app. Try desktop Chrome/Safari, or use Export Still as a backup.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    const width = video.videoWidth || 1280;
+    const height = video.videoHeight || 720;
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+
+    if (!context) return;
+
+    const stream = canvas.captureStream(30);
+    const mimeType = getBestRecordingMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    const exportStart = Math.max(0, impactTime - 0.45);
+    const exportEnd = Math.min(duration || video.duration || flightEndTime + 1, flightEndTime + 1.25);
+    const restoreTime = video.currentTime;
+    const restoreRate = video.playbackRate;
+    const restoreMuted = video.muted;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) chunks.push(event.data);
+    };
+
+    setExportState("recording");
+    setExportProgress(0);
+    setStatus("Exporting tracer video. Keep this tab open while the replay is recorded.");
+
+    await seekVideo(video, exportStart);
+    video.muted = true;
+    video.playbackRate = 1;
+
+    const blobPromise = new Promise((resolve, reject) => {
+      recorder.onerror = () => reject(new Error("Video recorder failed."));
+      recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || "video/webm" }));
+    });
+
+    let animationFrame = 0;
+    const drawFrame = () => {
+      const time = video.currentTime;
+      drawExportFrame(context, video, fullTracePoints, {
+        width,
+        height,
+        time,
+        impactTime,
+        flightTime: curveSettings.flightTime,
+        glow: curveSettings.glow,
+      });
+
+      const progress = clamp((time - exportStart) / Math.max(exportEnd - exportStart, 0.01), 0, 1);
+      setExportProgress(Math.round(progress * 100));
+
+      if (time >= exportEnd || video.ended) {
+        video.pause();
+        if (recorder.state !== "inactive") recorder.stop();
+        return;
+      }
+
+      animationFrame = requestAnimationFrame(drawFrame);
+    };
+
+    try {
+      recorder.start(250);
+      await video.play();
+      drawFrame();
+      const blob = await blobPromise;
+      cancelAnimationFrame(animationFrame);
+      await seekVideo(video, restoreTime);
+      video.playbackRate = restoreRate;
+      video.muted = restoreMuted;
+      setTimelineValue(restoreTime);
+
+      if (!blob.size) throw new Error("Empty export.");
+
+      const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+      const file = new File([blob], `ifonlyicouldputt-shot-tracer.${extension}`, { type: blob.type });
+
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          title: "ifonlyicouldputt shot tracer",
+          text: "Shot tracer replay by ifonlyicouldputt",
+          files: [file],
+        });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      setExportState("done");
+      setExportProgress(100);
+      setStatus("Tracer video exported. If your phone downloaded a WebM, upload from desktop or use Safari/Chrome depending on which format your device supports.");
+    } catch (error) {
+      console.error(error);
+      cancelAnimationFrame(animationFrame);
+      if (recorder.state !== "inactive") recorder.stop();
+      video.pause();
+      video.playbackRate = restoreRate;
+      video.muted = restoreMuted;
+      setExportState("error");
+      setStatus("Video export failed in this browser. The tracer still works, but this device may block browser video recording.");
+    }
   }
 
   return (
@@ -565,9 +685,17 @@ function App() {
                 <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
               </div>
 
-              <button className="primary-button export-button" type="button" disabled={!readyToTrace} onClick={exportTracerSnapshot}>
-                Export Tracer Image
-              </button>
+              <div className="export-panel">
+                <button className="primary-button export-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerVideo}>
+                  {exportState === "recording" ? `Exporting ${exportProgress}%` : "Export Tracer Video"}
+                </button>
+                <button className="secondary-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerSnapshot}>
+                  Export Still Backup
+                </button>
+                <p>
+                  Pro mode exports a replay clip with the red tracer drawn into the video. Still export is only a fallback.
+                </p>
+              </div>
             </aside>
           </div>
         </div>
@@ -620,6 +748,102 @@ function formatTime(value) {
   const minutes = Math.floor(value / 60);
   const seconds = Math.floor(value % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function getBestRecordingMimeType() {
+  const options = [
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+
+  return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function seekVideo(video, time) {
+  return new Promise((resolve, reject) => {
+    const targetTime = clamp(time, 0, video.duration || time);
+    if (Math.abs(video.currentTime - targetTime) < 0.01) {
+      resolve();
+      return;
+    }
+
+    const handleSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("Video seek failed."));
+    };
+    const cleanup = () => {
+      video.removeEventListener("seeked", handleSeeked);
+      video.removeEventListener("error", handleError);
+    };
+
+    video.addEventListener("seeked", handleSeeked, { once: true });
+    video.addEventListener("error", handleError, { once: true });
+    video.currentTime = targetTime;
+  });
+}
+
+function drawExportFrame(context, video, fullTracePoints, settings) {
+  const { width, height, time, impactTime, flightTime, glow } = settings;
+  context.clearRect(0, 0, width, height);
+  context.drawImage(video, 0, 0, width, height);
+
+  if (time >= impactTime) {
+    const progress = clamp((time - impactTime) / Math.max(flightTime, 0.01), 0, 1);
+    const visibleCount = Math.max(2, Math.ceil(fullTracePoints.length * progress));
+    const visiblePoints = fullTracePoints.slice(0, visibleCount);
+
+    if (visiblePoints.length > 1) {
+      context.save();
+      context.strokeStyle = "#ff2d24";
+      context.shadowColor = "rgba(255, 45, 36, 0.9)";
+      context.shadowBlur = Math.max(18, width * 0.018) * (glow / 100);
+      context.lineWidth = Math.max(7, width * 0.006);
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      drawSmoothCanvasPath(context, visiblePoints, width, height);
+      context.restore();
+    }
+  }
+
+  drawWatermark(context, width, height);
+}
+
+function drawWatermark(context, width, height) {
+  const padding = Math.max(22, width * 0.022);
+  const fontSize = Math.max(22, width * 0.024);
+  context.save();
+  context.font = `700 ${fontSize}px Arial, sans-serif`;
+  context.textBaseline = "bottom";
+  const text = "ifonlyicouldputt";
+  const metrics = context.measureText(text);
+  const boxWidth = metrics.width + padding * 1.4;
+  const boxHeight = fontSize + padding * 0.8;
+  const x = padding;
+  const y = height - padding - boxHeight;
+
+  context.fillStyle = "rgba(0, 0, 0, 0.56)";
+  roundRect(context, x, y, boxWidth, boxHeight, boxHeight / 2);
+  context.fill();
+  context.fillStyle = "rgba(243, 234, 216, 0.92)";
+  context.fillText(text, x + padding * 0.7, y + boxHeight - padding * 0.36);
+  context.restore();
+}
+
+function roundRect(context, x, y, width, height, radius) {
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.arcTo(x + width, y, x + width, y + height, radius);
+  context.arcTo(x + width, y + height, x, y + height, radius);
+  context.arcTo(x, y + height, x, y, radius);
+  context.arcTo(x, y, x + width, y, radius);
+  context.closePath();
 }
 
 function buildSmoothPath(points) {
