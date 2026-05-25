@@ -4,8 +4,8 @@ const PLAYBACK_PRESETS = [0.25, 0.5, 0.75, 1];
 const STEPS = [
   { id: 0, label: "Import", title: "Choose video" },
   { id: 1, label: "Impact", title: "Mark ball" },
-  { id: 2, label: "Apex", title: "Set curve" },
-  { id: 3, label: "Landing", title: "Set finish" },
+  { id: 2, label: "Landing", title: "Set finish" },
+  { id: 3, label: "Shape", title: "Adjust arc" },
 ];
 const PRODUCT_DROPS = [
   {
@@ -82,7 +82,7 @@ function App() {
   }, [playbackRate]);
 
   const currentFrame = Math.max(0, Math.round(timelineValue * fps));
-  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !apexPoint ? 2 : !endPoint ? 3 : 4;
+  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
 
@@ -197,19 +197,10 @@ function App() {
       setImpactTime(time);
       setImpactFrame(Math.round(time * fps));
       setStartPoint(point);
-      setApexPoint((current) => current ?? defaultApexFromStart(point));
+      setApexPoint(null);
       setPlacementMode(null);
       setSelectedHandle("start");
-      setStatus("Start point locked. Step 2: tap Set Apex and place the highest point of the ball flight.");
-      return;
-    }
-
-    if (placementMode === "apex") {
-      const point = getOverlayPoint(event);
-      setApexPoint(point);
-      setPlacementMode(null);
-      setSelectedHandle("apex");
-      setStatus("Apex locked. Step 3: scrub to where the ball lands or disappears and tap Mark Landing.");
+      setStatus("Start point locked. Step 2: scrub forward, tap Mark Landing, then tap where the ball lands or disappears.");
       return;
     }
 
@@ -218,11 +209,23 @@ function App() {
       const time = videoRef.current?.currentTime ?? timelineValue;
       const flightTime = startPoint ? estimateFlightTime(startPoint, point, curveSettings.ballSpeed) : 1.25;
       setEndPoint(point);
+      if (startPoint && !apexPoint) {
+        setApexPoint(defaultApexFromShot(startPoint, point));
+      }
       setLandingFrame(Math.round(time * fps));
       setCurveSettings((current) => ({ ...current, flightTime }));
       setPlacementMode(null);
       setSelectedHandle("end");
-      setStatus("Trace is ready. Drag the start, apex, or landing dot until it matches the shot.");
+      setStatus("Trace is ready. Drag the white apex dot to shape the arc, or drag start/landing to correct the anchors.");
+      return;
+    }
+
+    if (placementMode === "apex") {
+      const point = getOverlayPoint(event);
+      setApexPoint(point);
+      setPlacementMode(null);
+      setSelectedHandle("apex");
+      setStatus(endPoint ? "Apex updated. Replay or export when the arc matches the shot." : "Apex saved. Now set the landing point.");
     }
   }
 
@@ -505,8 +508,8 @@ function App() {
                       className="tracer-video"
                       src={sourceUrl}
                       playsInline
-                      controls
                       preload="metadata"
+                      controls={false}
                       onLoadedMetadata={(event) => {
                         const nextDuration = event.currentTarget.duration || 0;
                         const width = event.currentTarget.videoWidth || 16;
@@ -540,6 +543,12 @@ function App() {
                         {apexHandle ? <TraceHandle point={apexHandle} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
                         {endPoint ? <TraceHandle point={endPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
+                      {placementMode ? (
+                        <div className="placement-banner">
+                          <strong>{placementMode === "start" ? "Tap the ball at impact" : placementMode === "end" ? "Tap the landing point" : "Tap the apex point"}</strong>
+                          <span>{placementMode === "end" ? "If the ball leaves frame, tap where it disappeared." : "You can drag this dot later."}</span>
+                        </div>
+                      ) : null}
                     </div>
                   </>
                 ) : (
@@ -613,29 +622,12 @@ function App() {
 
                 <article className={activeStep === 2 ? "instruction-card active" : "instruction-card"}>
                   <span>02</span>
-                  <h3>Set apex</h3>
-                  <p>Tap the highest point of the shot. This controls the curve directly.</p>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!startPoint}
-                    onClick={() => {
-                      setPlacementMode("apex");
-                      setStatus("Tap the highest point of the tracer. You can drag it again later.");
-                    }}
-                  >
-                    Mark Apex
-                  </button>
-                </article>
-
-                <article className={activeStep === 3 ? "instruction-card active" : "instruction-card"}>
-                  <span>03</span>
                   <h3>Set landing</h3>
                   <p>Scrub forward to where the ball finishes, then tap the landing point.</p>
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={!apexPoint}
+                    disabled={!startPoint}
                     onClick={() => {
                       setPlacementMode("end");
                       setStatus("Tap where the ball landed or disappeared. You can adjust the curve after.");
@@ -646,10 +638,21 @@ function App() {
                 </article>
 
                 <article className={readyToTrace ? "instruction-card active" : "instruction-card"}>
-                  <span>04</span>
+                  <span>03</span>
                   <h3>Shape the flight</h3>
-                  <p>Drag any dot. The replay and export use this exact same path.</p>
+                  <p>Drag any dot, or tap Mark Apex to set the highest point manually.</p>
                   <div className="tiny-grid">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={!startPoint}
+                      onClick={() => {
+                        setPlacementMode("apex");
+                        setStatus("Tap the highest point of the tracer arc. This is optional but helps match real ball flight.");
+                      }}
+                    >
+                      Mark Apex
+                    </button>
                     <button className="secondary-button" type="button" onClick={jumpToImpact} disabled={!readyToTrace}>Go to Impact</button>
                     <button className="secondary-button" type="button" onClick={resetTrace} disabled={!startPoint && !apexPoint && !endPoint}>Reset</button>
                   </div>
@@ -724,10 +727,13 @@ function RangeField({ label, value, min, max, disabled, onChange }) {
   );
 }
 
-function defaultApexFromStart(start) {
+function defaultApexFromShot(start, end) {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const lift = clamp(distance * 0.32, 12, 34);
+
   return {
-    x: clamp(start.x + 18, 0, 100),
-    y: clamp(start.y - 28, 0, 100),
+    x: clamp((start.x + end.x) / 2, 0, 100),
+    y: clamp(Math.min(start.y, end.y) - lift, 0, 100),
   };
 }
 
