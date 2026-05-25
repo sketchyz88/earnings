@@ -38,6 +38,7 @@ function App() {
   const uploadInputRef = useRef(null);
   const liveInputRef = useRef(null);
   const videoRef = useRef(null);
+  const videoFrameRef = useRef(null);
   const overlayRef = useRef(null);
   const dragRef = useRef(null);
 
@@ -85,6 +86,7 @@ function App() {
   const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
+  const shapeMode = Boolean(sourceUrl && (readyToTrace || placementMode === "apex" || selectedHandle === "apex"));
 
   const apexHandle = useMemo(() => {
     return apexPoint;
@@ -180,11 +182,25 @@ function App() {
     setTimelineValue(nextTime);
   }
 
-  function getOverlayPoint(event) {
-    const bounds = overlayRef.current.getBoundingClientRect();
+  function getOverlayPoint(event, zone = "frame") {
+    const bounds = zone === "shape" ? overlayRef.current?.getBoundingClientRect() : videoFrameRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return { x: 0, y: 0 };
+    }
+
+    const rawX = ((event.clientX - bounds.left) / bounds.width) * 100;
+    const rawY = ((event.clientY - bounds.top) / bounds.height) * 100;
+
+    if (zone === "shape") {
+      return {
+        x: clamp(rawX, 0, 100),
+        y: clamp(mapRange(rawY, 0, 100, -35, 100), -35, 100),
+      };
+    }
+
     return {
-      x: clamp(((event.clientX - bounds.left) / bounds.width) * 100, 0, 100),
-      y: clamp(((event.clientY - bounds.top) / bounds.height) * 100, 0, 100),
+      x: clamp(rawX, 0, 100),
+      y: clamp(rawY, 0, 100),
     };
   }
 
@@ -192,7 +208,7 @@ function App() {
     if (!overlayRef.current) return;
 
     if (placementMode === "start") {
-      const point = getOverlayPoint(event);
+      const point = getOverlayPoint(event, "frame");
       const time = videoRef.current?.currentTime ?? timelineValue;
       setImpactTime(time);
       setImpactFrame(Math.round(time * fps));
@@ -205,7 +221,7 @@ function App() {
     }
 
     if (placementMode === "end") {
-      const point = getOverlayPoint(event);
+      const point = getOverlayPoint(event, "frame");
       const time = videoRef.current?.currentTime ?? timelineValue;
       const flightTime = startPoint ? estimateFlightTime(startPoint, point, curveSettings.ballSpeed) : 1.25;
       setEndPoint(point);
@@ -221,7 +237,7 @@ function App() {
     }
 
     if (placementMode === "apex") {
-      const point = getOverlayPoint(event);
+      const point = getOverlayPoint(event, "shape");
       setApexPoint(point);
       setPlacementMode(null);
       setSelectedHandle("apex");
@@ -238,7 +254,7 @@ function App() {
   function moveDraggedHandle(event) {
     if (!dragRef.current || !overlayRef.current) return;
 
-    const point = getOverlayPoint(event);
+    const point = getOverlayPoint(event, dragRef.current === "apex" ? "shape" : "frame");
     if (dragRef.current === "start") {
       setStartPoint(point);
       return;
@@ -500,33 +516,35 @@ function App() {
 
           <div className="studio-layout">
             <section className="video-column">
-              <div className="video-stage" style={{ "--video-aspect": videoAspect }}>
+              <div className={shapeMode ? "video-stage shape-mode" : "video-stage"} style={{ "--video-aspect": videoAspect }}>
                 {sourceUrl ? (
                   <>
-                    <video
-                      ref={videoRef}
-                      className="tracer-video"
-                      src={sourceUrl}
-                      playsInline
-                      preload="metadata"
-                      controls={false}
-                      onLoadedMetadata={(event) => {
-                        const nextDuration = event.currentTarget.duration || 0;
-                        const width = event.currentTarget.videoWidth || 16;
-                        const height = event.currentTarget.videoHeight || 9;
-                        setDuration(nextDuration);
-                        setVideoAspect(`${width} / ${height}`);
-                        setTimelineValue(0);
-                        event.currentTarget.playbackRate = playbackRate;
-                      }}
-                      onTimeUpdate={(event) => setTimelineValue(event.currentTarget.currentTime)}
-                      onPlay={() => setIsPlaying(true)}
-                      onPause={() => setIsPlaying(false)}
-                      onError={() => {
-                        setVideoError("This video format is not loading in this browser. If it is an iPhone HEVC .MOV, try exporting as H.264 MP4.");
-                        setStatus("The video could not load here. The tracer works best with H.264 MP4 or Safari-compatible MOV files.");
-                      }}
-                    />
+                    <div ref={videoFrameRef} className="video-frame">
+                      <video
+                        ref={videoRef}
+                        className="tracer-video"
+                        src={sourceUrl}
+                        playsInline
+                        preload="metadata"
+                        controls={false}
+                        onLoadedMetadata={(event) => {
+                          const nextDuration = event.currentTarget.duration || 0;
+                          const width = event.currentTarget.videoWidth || 16;
+                          const height = event.currentTarget.videoHeight || 9;
+                          setDuration(nextDuration);
+                          setVideoAspect(`${width} / ${height}`);
+                          setTimelineValue(0);
+                          event.currentTarget.playbackRate = playbackRate;
+                        }}
+                        onTimeUpdate={(event) => setTimelineValue(event.currentTarget.currentTime)}
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onError={() => {
+                          setVideoError("This video format is not loading in this browser. If it is an iPhone HEVC .MOV, try exporting as H.264 MP4.");
+                          setStatus("The video could not load here. The tracer works best with H.264 MP4 or Safari-compatible MOV files.");
+                        }}
+                      />
+                    </div>
                     <div
                       ref={overlayRef}
                       className={placementMode ? "trace-overlay placing" : "trace-overlay"}
@@ -536,7 +554,7 @@ function App() {
                       onPointerCancel={stopDrag}
                       onPointerLeave={stopDrag}
                     >
-                      <svg className="trace-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                      <svg className="trace-svg" viewBox="0 -35 100 135" preserveAspectRatio="none">
                         {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
                         {startPoint ? <TraceHandle point={startPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
@@ -760,6 +778,11 @@ function quadraticPoint(start, apex, end, t) {
     x: clamp(inv * inv * start.x + 2 * inv * t * apex.x + t * t * end.x, 0, 100),
     y: clamp(inv * inv * start.y + 2 * inv * t * apex.y + t * t * end.y, 0, 100),
   };
+}
+
+function mapRange(value, inMin, inMax, outMin, outMax) {
+  if (inMax === inMin) return outMin;
+  return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
 }
 
 function estimateFlightTime(start, end, speed) {

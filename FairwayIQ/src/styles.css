@@ -499,6 +499,20 @@ code {
     #030303;
 }
 
+.video-stage.shape-mode {
+  min-height: clamp(420px, 78svh, 760px);
+  aspect-ratio: auto;
+}
+
+.video-frame {
+  position: absolute;
+  inset: 0;
+}
+
+.video-stage.shape-mode .video-frame {
+  top: 24%;
+}
+
 .tracer-video {
   display: block;
   width: 100%;
@@ -888,5 +902,13 @@ input[type="range"] {
     min-height: 260px;
     max-height: 72svh;
     border-radius: 22px;
+  }
+
+  .video-stage.shape-mode {
+    min-height: min(82svh, 620px);
+  }
+
+  .video-stage.shape-mode .video-frame {
+    top: 20%;
   }
 }
