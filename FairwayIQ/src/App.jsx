@@ -696,6 +696,22 @@ function App() {
                 Smart assist now starts after you mark the ball at impact. That is much more reliable than guessing the whole swing from a huge frame.
               </div>
 
+              <div className="detect-panel">
+                <div className="range-row">
+                  <span>Auto detect assist</span>
+                  <strong>{detectConfidence == null ? "Ready" : `${detectConfidence}%`}</strong>
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!startPoint || impactTime == null || detectState === "running"}
+                  onClick={runTrackAssistBeta}
+                >
+                  {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
+                </button>
+                <p className="shape-note">First mark the ball at impact, then use auto detect to build the first tracer path from that point.</p>
+              </div>
+
               <div className="instruction-stack">
                 <article className={activeStep === 1 ? "instruction-card active" : "instruction-card"}>
                   <span>01</span>
@@ -725,7 +741,7 @@ function App() {
                       disabled={!startPoint || impactTime == null || detectState === "running"}
                       onClick={runTrackAssistBeta}
                     >
-                      {detectState === "running" ? `Track Assist ${detectProgress}%` : "Track From Ball Beta"}
+                      {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
                     </button>
                     <button
                       className="secondary-button"

@@ -713,6 +713,7 @@ input[type="range"] {
 .shape-panel,
 .speed-panel,
 .export-panel,
+.detect-panel,
 .anchor-grid,
 .timeline-field {
   padding: 14px;
@@ -743,6 +744,15 @@ input[type="range"] {
 
 .shape-panel {
   gap: 16px;
+}
+
+.detect-panel {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(34, 197, 94, 0.24);
+  background:
+    radial-gradient(circle at 14% 0%, rgba(34, 197, 94, 0.12), transparent 13rem),
+    rgba(255, 255, 255, 0.045);
 }
 
 .shape-note {
