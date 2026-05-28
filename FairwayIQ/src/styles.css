@@ -510,7 +510,7 @@ code {
 }
 
 .video-stage.shape-mode .video-frame {
-  top: 24%;
+  top: 28%;
 }
 
 .tracer-video {
@@ -810,7 +810,11 @@ input[type="range"] {
   .hero-actions,
   .import-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    max-width: 520px;
+    max-width: 640px;
+  }
+
+  .import-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .product-grid {
@@ -909,6 +913,6 @@ input[type="range"] {
   }
 
   .video-stage.shape-mode .video-frame {
-    top: 20%;
+    top: 24%;
   }
 }

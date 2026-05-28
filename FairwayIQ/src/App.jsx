@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const PLAYBACK_PRESETS = [0.25, 0.5, 0.75, 1];
+const TRACE_TOP = -55;
+const TRACE_BOTTOM = 100;
 const STEPS = [
   { id: 0, label: "Import", title: "Choose video" },
   { id: 1, label: "Impact", title: "Mark ball" },
@@ -54,6 +56,9 @@ function App() {
   const [exportProgress, setExportProgress] = useState(0);
   const [videoError, setVideoError] = useState("");
   const [status, setStatus] = useState("Import or record one swing video. Then the editor walks you through the shot trace one step at a time.");
+  const [detectState, setDetectState] = useState("idle");
+  const [detectProgress, setDetectProgress] = useState(0);
+  const [detectConfidence, setDetectConfidence] = useState(null);
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
@@ -132,6 +137,9 @@ function App() {
     setExportState("idle");
     setExportProgress(0);
     setVideoError("");
+    setDetectState("idle");
+    setDetectProgress(0);
+    setDetectConfidence(null);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
@@ -194,7 +202,7 @@ function App() {
     if (zone === "shape") {
       return {
         x: clamp(rawX, 0, 100),
-        y: clamp(mapRange(rawY, 0, 100, -35, 100), -35, 100),
+        y: clamp(mapRange(rawY, 0, 100, TRACE_TOP, TRACE_BOTTOM), TRACE_TOP, TRACE_BOTTOM),
       };
     }
 
@@ -274,6 +282,9 @@ function App() {
   }
 
   function resetTrace() {
+    setDetectState("idle");
+    setDetectProgress(0);
+    setDetectConfidence(null);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
@@ -283,6 +294,65 @@ function App() {
     setPlacementMode(null);
     setSelectedHandle(null);
     setStatus("Trace reset. Scrub to impact and place the start, apex, and landing points again.");
+  }
+
+  async function runAutoDetectBeta() {
+    if (!sourceUrl || detectState === "running") return;
+
+    setDetectState("running");
+    setDetectProgress(0);
+    setDetectConfidence(null);
+    setPlacementMode(null);
+    setSelectedHandle(null);
+    setStatus("Auto Detect Beta is analyzing the swing, finding impact, and estimating the first ball flight path.");
+
+    try {
+      const analysisVideo = document.createElement("video");
+      analysisVideo.src = sourceUrl;
+      analysisVideo.preload = "auto";
+      analysisVideo.muted = true;
+      analysisVideo.playsInline = true;
+
+      await loadVideoMetadata(analysisVideo);
+
+      const result = await autoDetectSwingTrace(analysisVideo, (progress) => {
+        setDetectProgress(progress);
+      });
+
+      const nextImpactFrame = Math.max(0, Math.round(result.impactTime * fps));
+      const nextLandingFrame = Math.max(nextImpactFrame, Math.round(result.landingTime * fps));
+
+      setImpactTime(result.impactTime);
+      setImpactFrame(nextImpactFrame);
+      setLandingFrame(nextLandingFrame);
+      setStartPoint(result.startPoint);
+      setApexPoint(result.apexPoint);
+      setEndPoint(result.endPoint);
+      setCurveSettings((current) => ({
+        ...current,
+        flightTime: result.flightTime,
+      }));
+      setDetectConfidence(result.confidence);
+      setDetectState("done");
+      setDetectProgress(100);
+      setSelectedHandle("apex");
+      setTimelineValue(result.impactTime);
+
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = result.impactTime;
+      }
+
+      setStatus(
+        result.confidence >= 68
+          ? "Auto Detect Beta found a strong first pass. Replay it, then drag any dot if the shot needs tuning."
+          : "Auto Detect Beta found a rough first pass. Use the three dots to tighten the start, apex, and finish."
+      );
+    } catch (error) {
+      setDetectState("error");
+      setDetectProgress(0);
+      setStatus("Auto Detect Beta could not lock the ball cleanly on this clip. Use the manual steps, or try a steadier 60fps landscape video.");
+    }
   }
 
   async function exportTracerSnapshot() {
@@ -496,6 +566,7 @@ function App() {
             <div><span>Frame</span><strong>{currentFrame}</strong></div>
             <div><span>Speed</span><strong>{playbackRate}x</strong></div>
             <div><span>Mode</span><strong>{sourceMode === "live" ? "Live" : "Upload"}</strong></div>
+            <div><span>Detect</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
           </div>
         </div>
 
@@ -554,7 +625,7 @@ function App() {
                       onPointerCancel={stopDrag}
                       onPointerLeave={stopDrag}
                     >
-                      <svg className="trace-svg" viewBox="0 -35 100 135" preserveAspectRatio="none">
+                      <svg className="trace-svg" viewBox={`0 ${TRACE_TOP} 100 ${TRACE_BOTTOM - TRACE_TOP}`} preserveAspectRatio="none">
                         {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
                         {startPoint ? <TraceHandle point={startPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
@@ -616,8 +687,15 @@ function App() {
               <div className="import-actions">
                 <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
                 <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload Existing Video</button>
+                <button className="secondary-button" type="button" disabled={!sourceUrl || detectState === "running"} onClick={runAutoDetectBeta}>
+                  {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect Beta"}
+                </button>
                 <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
                 <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
+              </div>
+
+              <div className="notice">
+                Auto Detect Beta watches for the strike, guesses the first ball flight, and pre-fills the three dots. Best results come from steady landscape video at 60fps or higher.
               </div>
 
               <div className="instruction-stack">
@@ -703,6 +781,7 @@ function App() {
                 <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
                 <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
                 <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
+                <div><span>Auto detect</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
               </div>
 
               <div className="export-panel">
@@ -745,13 +824,38 @@ function RangeField({ label, value, min, max, disabled, onChange }) {
   );
 }
 
+function loadVideoMetadata(video) {
+  return new Promise((resolve, reject) => {
+    if (video.readyState >= 1 && Number.isFinite(video.duration)) {
+      resolve(video);
+      return;
+    }
+
+    const handleLoaded = () => {
+      cleanup();
+      resolve(video);
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("Video metadata failed to load."));
+    };
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", handleLoaded);
+      video.removeEventListener("error", handleError);
+    };
+
+    video.addEventListener("loadedmetadata", handleLoaded, { once: true });
+    video.addEventListener("error", handleError, { once: true });
+  });
+}
+
 function defaultApexFromShot(start, end) {
   const distance = Math.hypot(end.x - start.x, end.y - start.y);
-  const lift = clamp(distance * 0.32, 12, 34);
+  const lift = clamp(distance * 0.44, 16, 58);
 
   return {
     x: clamp((start.x + end.x) / 2, 0, 100),
-    y: clamp(Math.min(start.y, end.y) - lift, 0, 100),
+    y: clamp(Math.min(start.y, end.y) - lift, TRACE_TOP, TRACE_BOTTOM),
   };
 }
 
@@ -776,7 +880,7 @@ function quadraticPoint(start, apex, end, t) {
 
   return {
     x: clamp(inv * inv * start.x + 2 * inv * t * apex.x + t * t * end.x, 0, 100),
-    y: clamp(inv * inv * start.y + 2 * inv * t * apex.y + t * t * end.y, 0, 100),
+    y: clamp(inv * inv * start.y + 2 * inv * t * apex.y + t * t * end.y, TRACE_TOP, TRACE_BOTTOM),
   };
 }
 
@@ -839,6 +943,301 @@ function seekVideo(video, time) {
     video.addEventListener("error", handleError, { once: true });
     video.currentTime = targetTime;
   });
+}
+
+async function autoDetectSwingTrace(video, onProgress) {
+  const aspect = (video.videoWidth || 16) / Math.max(video.videoHeight || 9, 1);
+  const sampleWidth = 288;
+  const sampleHeight = Math.max(162, Math.round(sampleWidth / aspect));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Canvas analysis unavailable.");
+
+  canvas.width = sampleWidth;
+  canvas.height = sampleHeight;
+
+  const analysisDuration = clamp(video.duration || 0, 0.8, 8);
+  const impactProbeEnd = Math.min(video.duration || analysisDuration, analysisDuration);
+  const impactSampleCount = Math.max(30, Math.min(96, Math.round(impactProbeEnd * 16)));
+  const impactFrames = [];
+  let previousFrame = null;
+
+  for (let index = 0; index <= impactSampleCount; index += 1) {
+    const time = mapRange(index, 0, impactSampleCount, 0, impactProbeEnd);
+    const frame = await captureVideoFrame(video, time, canvas, context);
+    if (previousFrame) {
+      impactFrames.push({
+        time,
+        energy: computeMotionEnergy(previousFrame, frame, sampleWidth, sampleHeight),
+      });
+    }
+    previousFrame = frame;
+    onProgress?.(Math.round(mapRange(index, 0, impactSampleCount, 4, 42)));
+  }
+
+  const impactTime = pickImpactTime(impactFrames, video.duration || analysisDuration);
+  const frameStep = clamp(1 / 30, 0.03, 0.05);
+  const trackLimit = Math.min(video.duration || impactTime + 1.6, impactTime + 1.6);
+  const trackFrameCount = Math.max(10, Math.min(26, Math.round((trackLimit - impactTime) / frameStep)));
+  const detections = [];
+  let lastDetection = null;
+  let velocity = null;
+  previousFrame = await captureVideoFrame(video, Math.max(impactTime - frameStep, 0), canvas, context);
+
+  for (let index = 1; index <= trackFrameCount; index += 1) {
+    const time = Math.min(impactTime + frameStep * index, video.duration || impactTime + frameStep * index);
+    const frame = await captureVideoFrame(video, time, canvas, context);
+    const candidate = findBallCandidate(previousFrame, frame, sampleWidth, sampleHeight, lastDetection, velocity);
+
+    if (candidate) {
+      const nextDetection = { ...candidate, time };
+      detections.push(nextDetection);
+
+      if (lastDetection) {
+        velocity = {
+          x: nextDetection.x - lastDetection.x,
+          y: nextDetection.y - lastDetection.y,
+        };
+      }
+
+      lastDetection = nextDetection;
+    }
+
+    previousFrame = frame;
+    onProgress?.(Math.round(mapRange(index, 1, trackFrameCount, 46, 100)));
+  }
+
+  if (detections.length < 2) {
+    throw new Error("Not enough ball detections.");
+  }
+
+  const smoothedDetections = smoothDetections(detections);
+  const normalizedStart = normalizePoint(estimateStartPoint(smoothedDetections), sampleWidth, sampleHeight);
+  const normalizedEnd = normalizePoint(estimateExitPoint(smoothedDetections, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
+  const normalizedApex = estimateApexPoint(smoothedDetections, normalizedStart, normalizedEnd, sampleWidth, sampleHeight);
+  const lastDetectionTime = smoothedDetections[smoothedDetections.length - 1]?.time ?? impactTime + 1;
+  const flightTime = clamp(lastDetectionTime - impactTime + 0.28, 0.55, 3.2);
+  const confidence = computeDetectConfidence(smoothedDetections, sampleWidth, sampleHeight);
+
+  return {
+    impactTime,
+    landingTime: Math.min(impactTime + flightTime, video.duration || impactTime + flightTime),
+    startPoint: normalizedStart,
+    apexPoint: normalizedApex,
+    endPoint: normalizedEnd,
+    flightTime,
+    confidence,
+  };
+}
+
+async function captureVideoFrame(video, time, canvas, context) {
+  await seekVideo(video, time);
+  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return context.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+function computeMotionEnergy(previousFrame, currentFrame, width, height) {
+  const startX = Math.floor(width * 0.12);
+  const endX = Math.ceil(width * 0.88);
+  const startY = Math.floor(height * 0.28);
+  const endY = Math.ceil(height * 0.95);
+  let total = 0;
+  let samples = 0;
+
+  for (let y = startY; y < endY; y += 2) {
+    const yWeight = y > height * 0.62 ? 1.25 : 1;
+    for (let x = startX; x < endX; x += 2) {
+      const index = (y * width + x) * 4;
+      const diff =
+        Math.abs(currentFrame.data[index] - previousFrame.data[index]) +
+        Math.abs(currentFrame.data[index + 1] - previousFrame.data[index + 1]) +
+        Math.abs(currentFrame.data[index + 2] - previousFrame.data[index + 2]);
+
+      total += diff * yWeight;
+      samples += 1;
+    }
+  }
+
+  return samples ? total / samples : 0;
+}
+
+function pickImpactTime(impactFrames, duration) {
+  if (!impactFrames.length) return clamp(duration * 0.35, 0, duration);
+
+  let bestFrame = impactFrames[0];
+
+  for (let index = 1; index < impactFrames.length - 1; index += 1) {
+    const previous = impactFrames[index - 1];
+    const current = impactFrames[index];
+    const next = impactFrames[index + 1];
+    const localEnergy = current.energy * 0.55 + previous.energy * 0.225 + next.energy * 0.225;
+    const timeBias = current.time < duration * 0.1 || current.time > duration * 0.88 ? 0.8 : 1;
+    const weightedEnergy = localEnergy * timeBias;
+
+    if (weightedEnergy > (bestFrame.weightedEnergy ?? bestFrame.energy)) {
+      bestFrame = { ...current, weightedEnergy };
+    }
+  }
+
+  return bestFrame.time;
+}
+
+function findBallCandidate(previousFrame, currentFrame, width, height, lastDetection, velocity) {
+  const cellSize = 4;
+  const cells = new Map();
+  const projection = lastDetection
+    ? {
+        x: velocity ? lastDetection.x + velocity.x : lastDetection.x,
+        y: velocity ? lastDetection.y + velocity.y : lastDetection.y,
+      }
+    : null;
+
+  const startX = clamp(Math.floor(projection ? projection.x - width * 0.16 : width * 0.12), 0, width - 1);
+  const endX = clamp(Math.ceil(projection ? projection.x + width * 0.18 : width * 0.88), 1, width);
+  const startY = clamp(Math.floor(projection ? projection.y - height * 0.18 : height * 0.3), 0, height - 1);
+  const endY = clamp(Math.ceil(projection ? projection.y + height * 0.12 : height * 0.92), 1, height);
+
+  for (let y = startY; y < endY; y += 2) {
+    for (let x = startX; x < endX; x += 2) {
+      const index = (y * width + x) * 4;
+      const red = currentFrame.data[index];
+      const green = currentFrame.data[index + 1];
+      const blue = currentFrame.data[index + 2];
+      const brightness = (red + green + blue) / 3;
+      const diff =
+        Math.abs(red - previousFrame.data[index]) +
+        Math.abs(green - previousFrame.data[index + 1]) +
+        Math.abs(blue - previousFrame.data[index + 2]);
+
+      if (brightness < 148 || diff < 72) continue;
+
+      const cellX = Math.floor(x / cellSize);
+      const cellY = Math.floor(y / cellSize);
+      const key = `${cellX}:${cellY}`;
+      const current = cells.get(key) || { count: 0, xSum: 0, ySum: 0, diffSum: 0, brightSum: 0 };
+      current.count += 1;
+      current.xSum += x;
+      current.ySum += y;
+      current.diffSum += diff;
+      current.brightSum += brightness;
+      cells.set(key, current);
+    }
+  }
+
+  let best = null;
+
+  cells.forEach((cell) => {
+    if (cell.count < 1 || cell.count > 30) return;
+    const x = cell.xSum / cell.count;
+    const y = cell.ySum / cell.count;
+    const sizePenalty = Math.abs(cell.count - 5) * 18;
+    let score = cell.diffSum * 0.42 + cell.brightSum * 0.7 - sizePenalty;
+
+    if (projection) {
+      score -= Math.hypot(x - projection.x, y - projection.y) * 4.1;
+    } else {
+      score -= Math.hypot(x - width * 0.54, y - height * 0.76) * 1.9;
+    }
+
+    if (!best || score > best.score) {
+      best = {
+        x,
+        y,
+        size: cell.count,
+        score,
+      };
+    }
+  });
+
+  return best && best.score > 90 ? best : null;
+}
+
+function smoothDetections(detections) {
+  return detections.map((detection, index) => {
+    const previous = detections[index - 1] || detection;
+    const next = detections[index + 1] || detection;
+
+    return {
+      ...detection,
+      x: previous.x * 0.2 + detection.x * 0.6 + next.x * 0.2,
+      y: previous.y * 0.2 + detection.y * 0.6 + next.y * 0.2,
+    };
+  });
+}
+
+function estimateStartPoint(detections) {
+  const first = detections[0];
+  const second = detections[1] || first;
+  const velocity = {
+    x: second.x - first.x,
+    y: second.y - first.y,
+  };
+
+  return {
+    x: first.x - velocity.x * 0.7,
+    y: first.y - velocity.y * 0.7,
+  };
+}
+
+function estimateExitPoint(detections, width, height) {
+  const last = detections[detections.length - 1];
+  const previous = detections[detections.length - 2] || last;
+  const velocity = {
+    x: last.x - previous.x,
+    y: last.y - previous.y,
+  };
+  let projected = { x: last.x, y: last.y };
+
+  for (let step = 1; step <= 18; step += 1) {
+    projected = {
+      x: last.x + velocity.x * step,
+      y: last.y + velocity.y * step,
+    };
+
+    if (projected.x < 0 || projected.x > width || projected.y < 0 || projected.y > height) {
+      break;
+    }
+  }
+
+  return {
+    x: clamp(projected.x, 0, width),
+    y: clamp(projected.y, 0, height),
+  };
+}
+
+function estimateApexPoint(detections, startPoint, endPoint, width, height) {
+  const highestDetection = detections.reduce((best, current) => (current.y < best.y ? current : best), detections[0]);
+  const highestNormalized = normalizePoint(highestDetection, width, height);
+  const defaultApex = defaultApexFromShot(startPoint, endPoint);
+
+  return {
+    x: clamp(highestNormalized.x * 0.58 + defaultApex.x * 0.42, 0, 100),
+    y: clamp(Math.min(highestNormalized.y - 3, defaultApex.y), TRACE_TOP, TRACE_BOTTOM),
+  };
+}
+
+function normalizePoint(point, width, height) {
+  return {
+    x: clamp((point.x / width) * 100, 0, 100),
+    y: clamp((point.y / height) * 100, 0, 100),
+  };
+}
+
+function computeDetectConfidence(detections, width, height) {
+  const averageScore = detections.reduce((sum, detection) => sum + (detection.score || 0), 0) / Math.max(detections.length, 1);
+  const pathSpread = detections.length > 1
+    ? Math.hypot(detections[detections.length - 1].x - detections[0].x, detections[detections.length - 1].y - detections[0].y)
+    : 0;
+
+  return Math.round(
+    clamp(
+      detections.length * 7 +
+        mapRange(averageScore, 90, 240, 22, 58) +
+        mapRange(pathSpread, width * 0.08, width * 0.42, 6, 18),
+      16,
+      96
+    )
+  );
 }
 
 function drawExportFrame(context, video, fullTracePoints, settings) {
