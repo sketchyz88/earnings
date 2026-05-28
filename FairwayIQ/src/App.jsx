@@ -218,6 +218,9 @@ function App() {
     if (placementMode === "start") {
       const point = getOverlayPoint(event, "frame");
       const time = videoRef.current?.currentTime ?? timelineValue;
+      setDetectState("idle");
+      setDetectProgress(0);
+      setDetectConfidence(null);
       setImpactTime(time);
       setImpactFrame(Math.round(time * fps));
       setStartPoint(point);
@@ -264,6 +267,9 @@ function App() {
 
     const point = getOverlayPoint(event, dragRef.current === "apex" ? "shape" : "frame");
     if (dragRef.current === "start") {
+      setDetectState("idle");
+      setDetectProgress(0);
+      setDetectConfidence(null);
       setStartPoint(point);
       return;
     }
@@ -296,15 +302,15 @@ function App() {
     setStatus("Trace reset. Scrub to impact and place the start, apex, and landing points again.");
   }
 
-  async function runAutoDetectBeta() {
-    if (!sourceUrl || detectState === "running") return;
+  async function runTrackAssistBeta() {
+    if (!sourceUrl || !startPoint || impactTime == null || detectState === "running") return;
 
     setDetectState("running");
     setDetectProgress(0);
     setDetectConfidence(null);
     setPlacementMode(null);
     setSelectedHandle(null);
-    setStatus("Auto Detect Beta is analyzing the swing, finding impact, and estimating the first ball flight path.");
+    setStatus("Track Assist Beta is starting from your marked ball and following the first part of the flight.");
 
     try {
       const analysisVideo = document.createElement("video");
@@ -315,19 +321,14 @@ function App() {
 
       await loadVideoMetadata(analysisVideo);
 
-      const result = await autoDetectSwingTrace(analysisVideo, (progress) => {
+      const result = await trackBallFromSeed(analysisVideo, { impactTime, startPoint }, (progress) => {
         setDetectProgress(progress);
       });
 
-      const nextImpactFrame = Math.max(0, Math.round(result.impactTime * fps));
-      const nextLandingFrame = Math.max(nextImpactFrame, Math.round(result.landingTime * fps));
-
-      setImpactTime(result.impactTime);
-      setImpactFrame(nextImpactFrame);
-      setLandingFrame(nextLandingFrame);
-      setStartPoint(result.startPoint);
+      const nextLandingFrame = Math.max(impactFrame ?? 0, Math.round(result.landingTime * fps));
       setApexPoint(result.apexPoint);
       setEndPoint(result.endPoint);
+      setLandingFrame(nextLandingFrame);
       setCurveSettings((current) => ({
         ...current,
         flightTime: result.flightTime,
@@ -336,22 +337,22 @@ function App() {
       setDetectState("done");
       setDetectProgress(100);
       setSelectedHandle("apex");
-      setTimelineValue(result.impactTime);
+      setTimelineValue(impactTime);
 
       if (videoRef.current) {
         videoRef.current.pause();
-        videoRef.current.currentTime = result.impactTime;
+        videoRef.current.currentTime = impactTime;
       }
 
       setStatus(
         result.confidence >= 68
-          ? "Auto Detect Beta found a strong first pass. Replay it, then drag any dot if the shot needs tuning."
-          : "Auto Detect Beta found a rough first pass. Use the three dots to tighten the start, apex, and finish."
+          ? "Track Assist Beta found a solid first arc from your marked ball. Replay it, then drag any dot if it needs tuning."
+          : "Track Assist Beta found a rough first arc. Keep the start point, then drag apex and landing to clean it up."
       );
     } catch (error) {
       setDetectState("error");
       setDetectProgress(0);
-      setStatus("Auto Detect Beta could not lock the ball cleanly on this clip. Use the manual steps, or try a steadier 60fps landscape video.");
+      setStatus("Track Assist Beta could not hold the ball on this clip. Keep using Mark Landing manually, or try a tighter/steadier clip.");
     }
   }
 
@@ -566,7 +567,7 @@ function App() {
             <div><span>Frame</span><strong>{currentFrame}</strong></div>
             <div><span>Speed</span><strong>{playbackRate}x</strong></div>
             <div><span>Mode</span><strong>{sourceMode === "live" ? "Live" : "Upload"}</strong></div>
-            <div><span>Detect</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
+            <div><span>Assist</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
           </div>
         </div>
 
@@ -687,15 +688,12 @@ function App() {
               <div className="import-actions">
                 <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
                 <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload Existing Video</button>
-                <button className="secondary-button" type="button" disabled={!sourceUrl || detectState === "running"} onClick={runAutoDetectBeta}>
-                  {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect Beta"}
-                </button>
                 <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
                 <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
               </div>
 
               <div className="notice">
-                Auto Detect Beta watches for the strike, guesses the first ball flight, and pre-fills the three dots. Best results come from steady landscape video at 60fps or higher.
+                Smart assist now starts after you mark the ball at impact. That is much more reliable than guessing the whole swing from a huge frame.
               </div>
 
               <div className="instruction-stack">
@@ -719,18 +717,28 @@ function App() {
                 <article className={activeStep === 2 ? "instruction-card active" : "instruction-card"}>
                   <span>02</span>
                   <h3>Set landing</h3>
-                  <p>Scrub forward to where the ball finishes, then tap the landing point.</p>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!startPoint}
-                    onClick={() => {
-                      setPlacementMode("end");
-                      setStatus("Tap where the ball landed or disappeared. You can adjust the curve after.");
-                    }}
-                  >
-                    Mark Landing
-                  </button>
+                  <p>After you mark the ball, either let Track Assist build a first pass or scrub forward and tap the landing point yourself.</p>
+                  <div className="tiny-grid">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={!startPoint || impactTime == null || detectState === "running"}
+                      onClick={runTrackAssistBeta}
+                    >
+                      {detectState === "running" ? `Track Assist ${detectProgress}%` : "Track From Ball Beta"}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={!startPoint}
+                      onClick={() => {
+                        setPlacementMode("end");
+                        setStatus("Tap where the ball landed or disappeared. You can adjust the curve after.");
+                      }}
+                    >
+                      Mark Landing
+                    </button>
+                  </div>
                 </article>
 
                 <article className={readyToTrace ? "instruction-card active" : "instruction-card"}>
@@ -781,7 +789,7 @@ function App() {
                 <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
                 <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
                 <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
-                <div><span>Auto detect</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
+                <div><span>Assist</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
               </div>
 
               <div className="export-panel">
@@ -945,7 +953,8 @@ function seekVideo(video, time) {
   });
 }
 
-async function autoDetectSwingTrace(video, onProgress) {
+async function trackBallFromSeed(video, seed, onProgress) {
+  const { impactTime, startPoint } = seed;
   const aspect = (video.videoWidth || 16) / Math.max(video.videoHeight || 9, 1);
   const sampleWidth = 288;
   const sampleHeight = Math.max(162, Math.round(sampleWidth / aspect));
@@ -955,56 +964,36 @@ async function autoDetectSwingTrace(video, onProgress) {
 
   canvas.width = sampleWidth;
   canvas.height = sampleHeight;
-
-  const analysisDuration = clamp(video.duration || 0, 0.8, 8);
-  const impactProbeEnd = Math.min(video.duration || analysisDuration, analysisDuration);
-  const impactSampleCount = Math.max(30, Math.min(96, Math.round(impactProbeEnd * 16)));
-  const impactFrames = [];
-  let previousFrame = null;
-
-  for (let index = 0; index <= impactSampleCount; index += 1) {
-    const time = mapRange(index, 0, impactSampleCount, 0, impactProbeEnd);
-    const frame = await captureVideoFrame(video, time, canvas, context);
-    if (previousFrame) {
-      impactFrames.push({
-        time,
-        energy: computeMotionEnergy(previousFrame, frame, sampleWidth, sampleHeight),
-      });
-    }
-    previousFrame = frame;
-    onProgress?.(Math.round(mapRange(index, 0, impactSampleCount, 4, 42)));
-  }
-
-  const impactTime = pickImpactTime(impactFrames, video.duration || analysisDuration);
   const frameStep = clamp(1 / 30, 0.03, 0.05);
-  const trackLimit = Math.min(video.duration || impactTime + 1.6, impactTime + 1.6);
-  const trackFrameCount = Math.max(10, Math.min(26, Math.round((trackLimit - impactTime) / frameStep)));
+  const trackLimit = Math.min(video.duration || impactTime + 1.5, impactTime + 1.5);
+  const trackFrameCount = Math.max(12, Math.min(28, Math.round((trackLimit - impactTime) / frameStep)));
   const detections = [];
-  let lastDetection = null;
-  let velocity = null;
-  previousFrame = await captureVideoFrame(video, Math.max(impactTime - frameStep, 0), canvas, context);
+  let previousFrame = await captureVideoFrame(video, Math.max(impactTime - frameStep, 0), canvas, context);
+  let lastDetection = denormalizePoint(startPoint, sampleWidth, sampleHeight);
+  let velocity = {
+    x: sampleWidth * 0.032,
+    y: -sampleHeight * 0.06,
+  };
 
   for (let index = 1; index <= trackFrameCount; index += 1) {
     const time = Math.min(impactTime + frameStep * index, video.duration || impactTime + frameStep * index);
     const frame = await captureVideoFrame(video, time, canvas, context);
-    const candidate = findBallCandidate(previousFrame, frame, sampleWidth, sampleHeight, lastDetection, velocity);
+    const candidate = findSeededBallCandidate(previousFrame, frame, sampleWidth, sampleHeight, lastDetection, velocity, index);
 
     if (candidate) {
       const nextDetection = { ...candidate, time };
       detections.push(nextDetection);
 
-      if (lastDetection) {
-        velocity = {
-          x: nextDetection.x - lastDetection.x,
-          y: nextDetection.y - lastDetection.y,
-        };
-      }
+      velocity = {
+        x: clamp(nextDetection.x - lastDetection.x, sampleWidth * -0.03, sampleWidth * 0.18),
+        y: clamp(nextDetection.y - lastDetection.y, -sampleHeight * 0.18, sampleHeight * 0.06),
+      };
 
       lastDetection = nextDetection;
     }
 
     previousFrame = frame;
-    onProgress?.(Math.round(mapRange(index, 1, trackFrameCount, 46, 100)));
+    onProgress?.(Math.round(mapRange(index, 1, trackFrameCount, 8, 100)));
   }
 
   if (detections.length < 2) {
@@ -1012,17 +1001,15 @@ async function autoDetectSwingTrace(video, onProgress) {
   }
 
   const smoothedDetections = smoothDetections(detections);
-  const normalizedStart = normalizePoint(estimateStartPoint(smoothedDetections), sampleWidth, sampleHeight);
   const normalizedEnd = normalizePoint(estimateExitPoint(smoothedDetections, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
-  const normalizedApex = estimateApexPoint(smoothedDetections, normalizedStart, normalizedEnd, sampleWidth, sampleHeight);
+  const normalizedApex = estimateApexPoint(smoothedDetections, startPoint, normalizedEnd, sampleWidth, sampleHeight);
   const lastDetectionTime = smoothedDetections[smoothedDetections.length - 1]?.time ?? impactTime + 1;
   const flightTime = clamp(lastDetectionTime - impactTime + 0.28, 0.55, 3.2);
-  const confidence = computeDetectConfidence(smoothedDetections, sampleWidth, sampleHeight);
+  const confidence = computeDetectConfidence(smoothedDetections, sampleWidth, sampleHeight, true);
 
   return {
     impactTime,
     landingTime: Math.min(impactTime + flightTime, video.duration || impactTime + flightTime),
-    startPoint: normalizedStart,
     apexPoint: normalizedApex,
     endPoint: normalizedEnd,
     flightTime,
@@ -1036,66 +1023,19 @@ async function captureVideoFrame(video, time, canvas, context) {
   return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-function computeMotionEnergy(previousFrame, currentFrame, width, height) {
-  const startX = Math.floor(width * 0.12);
-  const endX = Math.ceil(width * 0.88);
-  const startY = Math.floor(height * 0.28);
-  const endY = Math.ceil(height * 0.95);
-  let total = 0;
-  let samples = 0;
-
-  for (let y = startY; y < endY; y += 2) {
-    const yWeight = y > height * 0.62 ? 1.25 : 1;
-    for (let x = startX; x < endX; x += 2) {
-      const index = (y * width + x) * 4;
-      const diff =
-        Math.abs(currentFrame.data[index] - previousFrame.data[index]) +
-        Math.abs(currentFrame.data[index + 1] - previousFrame.data[index + 1]) +
-        Math.abs(currentFrame.data[index + 2] - previousFrame.data[index + 2]);
-
-      total += diff * yWeight;
-      samples += 1;
-    }
-  }
-
-  return samples ? total / samples : 0;
-}
-
-function pickImpactTime(impactFrames, duration) {
-  if (!impactFrames.length) return clamp(duration * 0.35, 0, duration);
-
-  let bestFrame = impactFrames[0];
-
-  for (let index = 1; index < impactFrames.length - 1; index += 1) {
-    const previous = impactFrames[index - 1];
-    const current = impactFrames[index];
-    const next = impactFrames[index + 1];
-    const localEnergy = current.energy * 0.55 + previous.energy * 0.225 + next.energy * 0.225;
-    const timeBias = current.time < duration * 0.1 || current.time > duration * 0.88 ? 0.8 : 1;
-    const weightedEnergy = localEnergy * timeBias;
-
-    if (weightedEnergy > (bestFrame.weightedEnergy ?? bestFrame.energy)) {
-      bestFrame = { ...current, weightedEnergy };
-    }
-  }
-
-  return bestFrame.time;
-}
-
-function findBallCandidate(previousFrame, currentFrame, width, height, lastDetection, velocity) {
+function findSeededBallCandidate(previousFrame, currentFrame, width, height, lastDetection, velocity, frameIndex) {
   const cellSize = 4;
   const cells = new Map();
-  const projection = lastDetection
-    ? {
-        x: velocity ? lastDetection.x + velocity.x : lastDetection.x,
-        y: velocity ? lastDetection.y + velocity.y : lastDetection.y,
-      }
-    : null;
+  const projection = {
+    x: lastDetection.x + velocity.x,
+    y: lastDetection.y + velocity.y,
+  };
 
-  const startX = clamp(Math.floor(projection ? projection.x - width * 0.16 : width * 0.12), 0, width - 1);
-  const endX = clamp(Math.ceil(projection ? projection.x + width * 0.18 : width * 0.88), 1, width);
-  const startY = clamp(Math.floor(projection ? projection.y - height * 0.18 : height * 0.3), 0, height - 1);
-  const endY = clamp(Math.ceil(projection ? projection.y + height * 0.12 : height * 0.92), 1, height);
+  const horizontalLead = frameIndex < 4 ? width * 0.18 : width * 0.14;
+  const startX = clamp(Math.floor(lastDetection.x - width * 0.05), 0, width - 1);
+  const endX = clamp(Math.ceil(projection.x + horizontalLead), 1, width);
+  const startY = clamp(Math.floor(projection.y - height * 0.18), 0, height - 1);
+  const endY = clamp(Math.ceil(lastDetection.y + height * 0.06), 1, height);
 
   for (let y = startY; y < endY; y += 2) {
     for (let x = startX; x < endX; x += 2) {
@@ -1109,7 +1049,7 @@ function findBallCandidate(previousFrame, currentFrame, width, height, lastDetec
         Math.abs(green - previousFrame.data[index + 1]) +
         Math.abs(blue - previousFrame.data[index + 2]);
 
-      if (brightness < 148 || diff < 72) continue;
+      if (brightness < 126 || diff < 42) continue;
 
       const cellX = Math.floor(x / cellSize);
       const cellY = Math.floor(y / cellSize);
@@ -1130,14 +1070,11 @@ function findBallCandidate(previousFrame, currentFrame, width, height, lastDetec
     if (cell.count < 1 || cell.count > 30) return;
     const x = cell.xSum / cell.count;
     const y = cell.ySum / cell.count;
-    const sizePenalty = Math.abs(cell.count - 5) * 18;
-    let score = cell.diffSum * 0.42 + cell.brightSum * 0.7 - sizePenalty;
-
-    if (projection) {
-      score -= Math.hypot(x - projection.x, y - projection.y) * 4.1;
-    } else {
-      score -= Math.hypot(x - width * 0.54, y - height * 0.76) * 1.9;
-    }
+    const sizePenalty = Math.abs(cell.count - 4) * 14;
+    let score = cell.diffSum * 0.36 + cell.brightSum * 0.64 - sizePenalty;
+    score -= Math.hypot(x - projection.x, y - projection.y) * 3.8;
+    score -= x < lastDetection.x - width * 0.015 ? 34 : 0;
+    score -= y > lastDetection.y + height * 0.03 ? 28 : 0;
 
     if (!best || score > best.score) {
       best = {
@@ -1149,7 +1086,7 @@ function findBallCandidate(previousFrame, currentFrame, width, height, lastDetec
     }
   });
 
-  return best && best.score > 90 ? best : null;
+  return best && best.score > 72 ? best : null;
 }
 
 function smoothDetections(detections) {
@@ -1163,20 +1100,6 @@ function smoothDetections(detections) {
       y: previous.y * 0.2 + detection.y * 0.6 + next.y * 0.2,
     };
   });
-}
-
-function estimateStartPoint(detections) {
-  const first = detections[0];
-  const second = detections[1] || first;
-  const velocity = {
-    x: second.x - first.x,
-    y: second.y - first.y,
-  };
-
-  return {
-    x: first.x - velocity.x * 0.7,
-    y: first.y - velocity.y * 0.7,
-  };
 }
 
 function estimateExitPoint(detections, width, height) {
@@ -1223,7 +1146,14 @@ function normalizePoint(point, width, height) {
   };
 }
 
-function computeDetectConfidence(detections, width, height) {
+function denormalizePoint(point, width, height) {
+  return {
+    x: clamp((point.x / 100) * width, 0, width),
+    y: clamp((point.y / 100) * height, 0, height),
+  };
+}
+
+function computeDetectConfidence(detections, width, height, seeded = false) {
   const averageScore = detections.reduce((sum, detection) => sum + (detection.score || 0), 0) / Math.max(detections.length, 1);
   const pathSpread = detections.length > 1
     ? Math.hypot(detections[detections.length - 1].x - detections[0].x, detections[detections.length - 1].y - detections[0].y)
@@ -1232,10 +1162,11 @@ function computeDetectConfidence(detections, width, height) {
   return Math.round(
     clamp(
       detections.length * 7 +
-        mapRange(averageScore, 90, 240, 22, 58) +
-        mapRange(pathSpread, width * 0.08, width * 0.42, 6, 18),
-      16,
-      96
+        mapRange(averageScore, seeded ? 72 : 90, seeded ? 210 : 240, 20, 54) +
+        mapRange(pathSpread, width * 0.06, width * 0.42, 6, 18) +
+        (seeded ? 8 : 0),
+      14,
+      94
     )
   );
 }
