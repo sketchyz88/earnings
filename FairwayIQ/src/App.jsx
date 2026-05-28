@@ -25,13 +25,13 @@ const PRODUCT_DROPS = [
   {
     name: "Rope Hat",
     tag: "Concept 03",
-    motif: "HAT",
+    image: "/brand/ifonlyicouldputt-rope-hat.png",
     detail: "Deep green rope hat with brass hardware and crossed-club badge.",
   },
   {
     name: "Practice Crew",
     tag: "Concept 04",
-    motif: "CREW",
+    image: "/brand/ifonlyicouldputt-practice-crew.png",
     detail: "Cream heavyweight layer with oversized putting graphic on the back.",
   },
 ];
