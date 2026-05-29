@@ -91,7 +91,7 @@ function App() {
   const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
-  const shapeMode = Boolean(sourceUrl && (readyToTrace || placementMode === "apex" || selectedHandle === "apex"));
+  const shapeMode = Boolean(sourceUrl && !isPlaying && (placementMode === "apex" || selectedHandle === "apex" || readyToTrace));
 
   const apexHandle = useMemo(() => {
     return apexPoint;
@@ -354,6 +354,21 @@ function App() {
       setDetectProgress(0);
       setStatus("Track Assist Beta could not hold the ball on this clip. Keep using Mark Landing manually, or try a tighter/steadier clip.");
     }
+  }
+
+  function handleTrackAssistPress() {
+    if (!sourceUrl) {
+      setStatus("Upload or record a swing first.");
+      return;
+    }
+
+    if (!startPoint || impactTime == null) {
+      setPlacementMode("start");
+      setStatus("First scrub to impact, tap Mark Impact + Ball, and place the dot on the ball. Then auto detect can track from that point.");
+      return;
+    }
+
+    runTrackAssistBeta();
   }
 
   async function exportTracerSnapshot() {
@@ -704,8 +719,8 @@ function App() {
                 <button
                   className="secondary-button"
                   type="button"
-                  disabled={!startPoint || impactTime == null || detectState === "running"}
-                  onClick={runTrackAssistBeta}
+                  disabled={detectState === "running"}
+                  onClick={handleTrackAssistPress}
                 >
                   {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
                 </button>
@@ -738,8 +753,8 @@ function App() {
                     <button
                       className="secondary-button"
                       type="button"
-                      disabled={!startPoint || impactTime == null || detectState === "running"}
-                      onClick={runTrackAssistBeta}
+                      disabled={detectState === "running"}
+                      onClick={handleTrackAssistPress}
                     >
                       {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
                     </button>
