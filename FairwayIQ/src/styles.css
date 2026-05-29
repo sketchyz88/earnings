@@ -755,6 +755,27 @@ input[type="range"] {
     rgba(255, 255, 255, 0.045);
 }
 
+.detect-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detect-stats span {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--cream-dim);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .shape-note {
   margin: -2px 0 0;
   color: var(--cream-dim);
