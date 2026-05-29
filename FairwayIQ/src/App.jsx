@@ -3,6 +3,41 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const PLAYBACK_PRESETS = [0.25, 0.5, 0.75, 1];
 const TRACE_TOP = -55;
 const TRACE_BOTTOM = 100;
+const CAMERA_PROFILES = {
+  range_tight: {
+    label: "Range Tight",
+    detail: "Tripod, zoomed, ball stays larger in frame.",
+    sampleWidth: 352,
+    frameStep: 1 / 48,
+    trackWindowSeconds: 1.7,
+    initialVelocityX: 0.03,
+    initialVelocityY: -0.055,
+    brightnessThreshold: 124,
+    diffThreshold: 30,
+  },
+  range_standard: {
+    label: "Range Standard",
+    detail: "Typical down-the-line practice video.",
+    sampleWidth: 320,
+    frameStep: 1 / 45,
+    trackWindowSeconds: 1.85,
+    initialVelocityX: 0.028,
+    initialVelocityY: -0.052,
+    brightnessThreshold: 122,
+    diffThreshold: 34,
+  },
+  wide_fairway: {
+    label: "Wide Fairway",
+    detail: "Ball is tiny in a large course frame.",
+    sampleWidth: 384,
+    frameStep: 1 / 54,
+    trackWindowSeconds: 2.05,
+    initialVelocityX: 0.024,
+    initialVelocityY: -0.046,
+    brightnessThreshold: 116,
+    diffThreshold: 24,
+  },
+};
 const STEPS = [
   { id: 0, label: "Import", title: "Choose video" },
   { id: 1, label: "Impact", title: "Mark ball" },
@@ -61,6 +96,9 @@ function App() {
   const [detectConfidence, setDetectConfidence] = useState(null);
   const [detectStage, setDetectStage] = useState("Waiting for impact point.");
   const [detectStats, setDetectStats] = useState(null);
+  const [detectPoints, setDetectPoints] = useState([]);
+  const [cameraProfile, setCameraProfile] = useState("wide_fairway");
+  const [showTrackingLab, setShowTrackingLab] = useState(true);
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
@@ -144,6 +182,7 @@ function App() {
     setDetectConfidence(null);
     setDetectStage("Waiting for impact point.");
     setDetectStats(null);
+    setDetectPoints([]);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
@@ -230,6 +269,7 @@ function App() {
       setStartPoint(point);
       setApexPoint(null);
       setDetectStats(null);
+      setDetectPoints([]);
       setPlacementMode(null);
       setSelectedHandle("start");
       setStatus("Start point locked. Step 2: scrub forward, tap Mark Landing, then tap where the ball lands or disappears.");
@@ -277,6 +317,7 @@ function App() {
       setDetectConfidence(null);
       setDetectStage("Impact point moved. Auto detect is ready to re-run from the new ball position.");
       setDetectStats(null);
+      setDetectPoints([]);
       setStartPoint(point);
       return;
     }
@@ -300,6 +341,7 @@ function App() {
     setDetectConfidence(null);
     setDetectStage("Waiting for impact point.");
     setDetectStats(null);
+    setDetectPoints([]);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
@@ -319,6 +361,7 @@ function App() {
     setDetectConfidence(null);
     setDetectStage("Preparing video frames...");
     setDetectStats(null);
+    setDetectPoints([]);
     setPlacementMode(null);
     setSelectedHandle(null);
     setStatus("Track Assist Beta is starting from your marked ball and following the first part of the flight.");
@@ -332,7 +375,7 @@ function App() {
 
       await loadVideoMetadata(analysisVideo);
 
-      const result = await trackBallFromSeed(analysisVideo, { impactTime, startPoint }, ({ progress, stage }) => {
+      const result = await trackBallFromSeed(analysisVideo, { impactTime, startPoint, profile: CAMERA_PROFILES[cameraProfile] }, ({ progress, stage }) => {
         setDetectProgress(progress);
         if (stage) setDetectStage(stage);
       });
@@ -351,6 +394,7 @@ function App() {
         framesScanned: result.framesScanned,
         detectionsFound: result.detectionsFound,
       });
+      setDetectPoints(result.debugPoints);
       setDetectState("done");
       setDetectProgress(100);
       setSelectedHandle("apex");
@@ -370,6 +414,7 @@ function App() {
       setDetectState("error");
       setDetectProgress(0);
       setDetectStage("Analysis stopped before a usable flight path was found.");
+      setDetectPoints([]);
       setStatus("Track Assist Beta could not hold the ball on this clip. Keep using Mark Landing manually, or try a tighter/steadier clip.");
     }
   }
@@ -660,6 +705,15 @@ function App() {
                       onPointerLeave={stopDrag}
                     >
                       <svg className="trace-svg" viewBox={`0 ${TRACE_TOP} 100 ${TRACE_BOTTOM - TRACE_TOP}`} preserveAspectRatio="none">
+                        {showTrackingLab && detectPoints.map((point, index) => (
+                          <circle
+                            key={`${point.type}-${index}`}
+                            cx={point.x}
+                            cy={point.y}
+                            r={point.type === "projected" ? 0.48 : 0.62}
+                            className={point.type === "projected" ? "track-point projected" : "track-point detected"}
+                          />
+                        ))}
                         {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
                         {startPoint ? <TraceHandle point={startPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
@@ -727,6 +781,33 @@ function App() {
 
               <div className="notice">
                 Smart assist now starts after you mark the ball at impact. That is much more reliable than guessing the whole swing from a huge frame.
+              </div>
+
+              <div className="lab-panel">
+                <div className="range-row">
+                  <span>Camera setup</span>
+                  <strong>{CAMERA_PROFILES[cameraProfile].label}</strong>
+                </div>
+                <div className="profile-grid">
+                  {Object.entries(CAMERA_PROFILES).map(([key, profile]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={cameraProfile === key ? "profile-pill active" : "profile-pill"}
+                      onClick={() => setCameraProfile(key)}
+                    >
+                      {profile.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="shape-note">{CAMERA_PROFILES[cameraProfile].detail}</p>
+                <button
+                  className={showTrackingLab ? "secondary-button active-lab" : "secondary-button"}
+                  type="button"
+                  onClick={() => setShowTrackingLab((current) => !current)}
+                >
+                  {showTrackingLab ? "Hide Tracking Lab" : "Show Tracking Lab"}
+                </button>
               </div>
 
               <div className="detect-panel">
@@ -1009,9 +1090,9 @@ function seekVideo(video, time) {
 }
 
 async function trackBallFromSeed(video, seed, onUpdate) {
-  const { impactTime, startPoint } = seed;
+  const { impactTime, startPoint, profile } = seed;
   const aspect = (video.videoWidth || 16) / Math.max(video.videoHeight || 9, 1);
-  const sampleWidth = 320;
+  const sampleWidth = profile?.sampleWidth || 320;
   const sampleHeight = Math.max(162, Math.round(sampleWidth / aspect));
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", { willReadFrequently: true });
@@ -1019,15 +1100,15 @@ async function trackBallFromSeed(video, seed, onUpdate) {
 
   canvas.width = sampleWidth;
   canvas.height = sampleHeight;
-  const frameStep = 1 / 45;
-  const trackLimit = Math.min(video.duration || impactTime + 1.85, impactTime + 1.85);
+  const frameStep = profile?.frameStep || 1 / 45;
+  const trackLimit = Math.min(video.duration || impactTime + (profile?.trackWindowSeconds || 1.85), impactTime + (profile?.trackWindowSeconds || 1.85));
   const trackFrameCount = Math.max(26, Math.min(64, Math.round((trackLimit - impactTime) / frameStep)));
   const detections = [];
   let previousFrame = await captureVideoFrame(video, Math.max(impactTime - frameStep, 0), canvas, context);
   let lastDetection = denormalizePoint(startPoint, sampleWidth, sampleHeight);
   let velocity = {
-    x: sampleWidth * 0.028,
-    y: -sampleHeight * 0.052,
+    x: sampleWidth * (profile?.initialVelocityX || 0.028),
+    y: sampleHeight * (profile?.initialVelocityY || -0.052),
   };
   let misses = 0;
 
@@ -1038,7 +1119,7 @@ async function trackBallFromSeed(video, seed, onUpdate) {
 
     const time = Math.min(impactTime + frameStep * index, video.duration || impactTime + frameStep * index);
     const frame = await captureVideoFrame(video, time, canvas, context);
-    const candidate = findSeededBallCandidate(previousFrame, frame, sampleWidth, sampleHeight, lastDetection, velocity, index, misses);
+    const candidate = findSeededBallCandidate(previousFrame, frame, sampleWidth, sampleHeight, lastDetection, velocity, index, misses, profile);
 
     if (candidate) {
       const nextDetection = { ...candidate, time };
@@ -1088,6 +1169,7 @@ async function trackBallFromSeed(video, seed, onUpdate) {
     framesScanned: trackFrameCount,
     detectionsFound: smoothedDetections.length,
     stage: "Analysis complete. Review the first pass and drag the dots if the tracer needs correction.",
+    debugPoints: buildDebugPoints(smoothedDetections, sampleWidth, sampleHeight),
   };
 }
 
@@ -1097,7 +1179,7 @@ async function captureVideoFrame(video, time, canvas, context) {
   return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-function findSeededBallCandidate(previousFrame, currentFrame, width, height, lastDetection, velocity, frameIndex, misses) {
+function findSeededBallCandidate(previousFrame, currentFrame, width, height, lastDetection, velocity, frameIndex, misses, profile) {
   const cellSize = 4;
   const cells = new Map();
   const projection = {
@@ -1125,7 +1207,7 @@ function findSeededBallCandidate(previousFrame, currentFrame, width, height, las
         Math.abs(blue - previousFrame.data[index + 2]);
 
       const greenAdvantage = green - Math.max(red, blue);
-      if (brightness < 122 || diff < 34 || greenAdvantage > 34) continue;
+      if (brightness < (profile?.brightnessThreshold || 122) || diff < (profile?.diffThreshold || 34) || greenAdvantage > 34) continue;
 
       const cellX = Math.floor(x / cellSize);
       const cellY = Math.floor(y / cellSize);
@@ -1228,6 +1310,24 @@ function denormalizePoint(point, width, height) {
     x: clamp((point.x / 100) * width, 0, width),
     y: clamp((point.y / 100) * height, 0, height),
   };
+}
+
+function buildDebugPoints(detections, width, height) {
+  return detections.flatMap((point, index) => {
+    const normalized = normalizePoint(point, width, height);
+    const debug = [{ ...normalized, type: "detected" }];
+
+    if (index === detections.length - 1 && detections.length > 1) {
+      const previous = detections[index - 1];
+      const projected = {
+        x: clamp(point.x + (point.x - previous.x) * 2.2, 0, width),
+        y: clamp(point.y + (point.y - previous.y) * 2.2, 0, height),
+      };
+      debug.push({ ...normalizePoint(projected, width, height), type: "projected" });
+    }
+
+    return debug;
+  });
 }
 
 function computeDetectConfidence(detections, width, height, seeded = false) {

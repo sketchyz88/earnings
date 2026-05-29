@@ -583,6 +583,20 @@ code {
     drop-shadow(0 0 calc(22px * var(--trace-glow)) rgba(255, 45, 36, 0.58));
 }
 
+.track-point {
+  pointer-events: none;
+}
+
+.track-point.detected {
+  fill: rgba(110, 255, 157, 0.88);
+  filter: drop-shadow(0 0 5px rgba(34, 197, 94, 0.75));
+}
+
+.track-point.projected {
+  fill: rgba(215, 173, 67, 0.8);
+  filter: drop-shadow(0 0 4px rgba(215, 173, 67, 0.55));
+}
+
 .trace-handle {
   cursor: grab;
   pointer-events: auto;
@@ -710,6 +724,7 @@ input[type="range"] {
 }
 
 .instruction-card,
+.lab-panel,
 .shape-panel,
 .speed-panel,
 .export-panel,
@@ -725,6 +740,15 @@ input[type="range"] {
 .instruction-card {
   display: grid;
   gap: 10px;
+}
+
+.lab-panel {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(215, 173, 67, 0.22);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(215, 173, 67, 0.1), transparent 13rem),
+    rgba(255, 255, 255, 0.045);
 }
 
 .instruction-card.active {
@@ -753,6 +777,33 @@ input[type="range"] {
   background:
     radial-gradient(circle at 14% 0%, rgba(34, 197, 94, 0.12), transparent 13rem),
     rgba(255, 255, 255, 0.045);
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profile-pill {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--cream-dim);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.profile-pill.active {
+  border-color: rgba(215, 173, 67, 0.42);
+  background: rgba(215, 173, 67, 0.16);
+  color: var(--cream);
+}
+
+.active-lab {
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #bfffd3;
 }
 
 .detect-stats {
@@ -923,7 +974,8 @@ input[type="range"] {
   }
 
   .transport-panel,
-  .preset-row {
+  .preset-row,
+  .profile-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
