@@ -99,6 +99,7 @@ function App() {
   const [detectPoints, setDetectPoints] = useState([]);
   const [cameraProfile, setCameraProfile] = useState("wide_fairway");
   const [showTrackingLab, setShowTrackingLab] = useState(true);
+  const [frameViewport, setFrameViewport] = useState({ left: 0, top: 0, width: 100, height: 100 });
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
@@ -127,11 +128,27 @@ function App() {
     }
   }, [playbackRate]);
 
+  useEffect(() => {
+    function handleResize() {
+      updateFrameViewport();
+    }
+
+    updateFrameViewport();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [sourceUrl, videoAspect, shapeMode]);
+
   const currentFrame = Math.max(0, Math.round(timelineValue * fps));
   const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
-  const shapeMode = Boolean(sourceUrl && !isPlaying && (placementMode === "apex" || selectedHandle === "apex" || readyToTrace));
+  const shapeMode = Boolean(
+    sourceUrl &&
+      !isPlaying &&
+      placementMode !== "start" &&
+      placementMode !== "end" &&
+      (placementMode === "apex" || selectedHandle === "apex" || readyToTrace)
+  );
 
   const apexHandle = useMemo(() => {
     return apexPoint;
@@ -143,6 +160,8 @@ function App() {
     return buildManualTracePoints(startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime);
   }, [startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime]);
 
+  const stageFullTracePoints = useMemo(() => fullTracePoints.map(mapLogicalPointToStagePoint), [fullTracePoints, frameViewport]);
+
   const visibleTracePoints = useMemo(() => {
     if (!readyToTrace) return [];
     if (timelineValue < impactTime) return [];
@@ -153,12 +172,19 @@ function App() {
     return fullTracePoints.slice(0, visibleCount);
   }, [activeStep, curveSettings.flightTime, fullTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
 
-  const guidePath = useMemo(() => {
-    if (fullTracePoints.length < 2) return "";
-    return buildSmoothPath(fullTracePoints);
-  }, [fullTracePoints]);
+  const stageVisibleTracePoints = useMemo(() => visibleTracePoints.map(mapLogicalPointToStagePoint), [visibleTracePoints, frameViewport]);
 
-  const tracePath = useMemo(() => buildSmoothPath(visibleTracePoints), [visibleTracePoints]);
+  const guidePath = useMemo(() => {
+    if (stageFullTracePoints.length < 2) return "";
+    return buildSmoothPath(stageFullTracePoints);
+  }, [stageFullTracePoints]);
+
+  const tracePath = useMemo(() => buildSmoothPath(stageVisibleTracePoints), [stageVisibleTracePoints]);
+
+  const stageStartPoint = startPoint ? mapLogicalPointToStagePoint(startPoint) : null;
+  const stageApexPoint = apexPoint ? mapLogicalPointToStagePoint(apexPoint) : null;
+  const stageEndPoint = endPoint ? mapLogicalPointToStagePoint(endPoint) : null;
+  const stageDetectPoints = useMemo(() => detectPoints.map((point) => ({ ...mapLogicalPointToStagePoint(point), type: point.type })), [detectPoints, frameViewport]);
 
   function handleVideoSelect(event, mode) {
     const [file] = event.target.files || [];
@@ -233,8 +259,71 @@ function App() {
     setTimelineValue(nextTime);
   }
 
+  function getFrameContentRect() {
+    const frameBounds = videoFrameRef.current?.getBoundingClientRect();
+    const video = videoRef.current;
+    if (!frameBounds || !video) return null;
+
+    const frameAspect = frameBounds.width / Math.max(frameBounds.height, 1);
+    const videoAspectRatio = (video.videoWidth || 1) / Math.max(video.videoHeight || 1, 1);
+
+    if (!Number.isFinite(videoAspectRatio) || videoAspectRatio <= 0) {
+      return frameBounds;
+    }
+
+    if (frameAspect > videoAspectRatio) {
+      const contentHeight = frameBounds.height;
+      const contentWidth = contentHeight * videoAspectRatio;
+      const left = frameBounds.left + (frameBounds.width - contentWidth) / 2;
+      return {
+        left,
+        top: frameBounds.top,
+        width: contentWidth,
+        height: contentHeight,
+      };
+    }
+
+    const contentWidth = frameBounds.width;
+    const contentHeight = contentWidth / videoAspectRatio;
+    const top = frameBounds.top + (frameBounds.height - contentHeight) / 2;
+    return {
+      left: frameBounds.left,
+      top,
+      width: contentWidth,
+      height: contentHeight,
+    };
+  }
+
+  function updateFrameViewport() {
+    const overlayBounds = overlayRef.current?.getBoundingClientRect();
+    const contentRect = getFrameContentRect();
+    if (!overlayBounds || !contentRect) return;
+
+    setFrameViewport({
+      left: ((contentRect.left - overlayBounds.left) / overlayBounds.width) * 100,
+      top: ((contentRect.top - overlayBounds.top) / overlayBounds.height) * 100,
+      width: (contentRect.width / overlayBounds.width) * 100,
+      height: (contentRect.height / overlayBounds.height) * 100,
+    });
+  }
+
+  function mapLogicalPointToStagePoint(point) {
+    if (!point) return { x: 0, y: 0 };
+
+    const x = frameViewport.left + (point.x / 100) * frameViewport.width;
+    const y =
+      point.y >= 0
+        ? frameViewport.top + (point.y / 100) * frameViewport.height
+        : mapRange(point.y, TRACE_TOP, 0, 0, frameViewport.top);
+
+    return {
+      x: clamp(x, 0, 100),
+      y: clamp(y, TRACE_TOP, 100),
+    };
+  }
+
   function getOverlayPoint(event, zone = "frame") {
-    const bounds = zone === "shape" ? overlayRef.current?.getBoundingClientRect() : videoFrameRef.current?.getBoundingClientRect();
+    const bounds = zone === "shape" ? overlayRef.current?.getBoundingClientRect() : getFrameContentRect();
     if (!bounds) {
       return { x: 0, y: 0 };
     }
@@ -243,9 +332,17 @@ function App() {
     const rawY = ((event.clientY - bounds.top) / bounds.height) * 100;
 
     if (zone === "shape") {
+      const frameLeft = frameViewport.left;
+      const frameRight = frameViewport.left + frameViewport.width;
+      const normalizedX = mapRange(rawX, frameLeft, frameRight, 0, 100);
+      const normalizedY =
+        rawY <= frameViewport.top
+          ? mapRange(rawY, 0, Math.max(frameViewport.top, 0.001), TRACE_TOP, 0)
+          : mapRange(rawY, frameViewport.top, frameViewport.top + frameViewport.height, 0, 100);
+
       return {
-        x: clamp(rawX, 0, 100),
-        y: clamp(mapRange(rawY, 0, 100, TRACE_TOP, TRACE_BOTTOM), TRACE_TOP, TRACE_BOTTOM),
+        x: clamp(normalizedX, 0, 100),
+        y: clamp(normalizedY, TRACE_TOP, TRACE_BOTTOM),
       };
     }
 
@@ -253,6 +350,22 @@ function App() {
       x: clamp(rawX, 0, 100),
       y: clamp(rawY, 0, 100),
     };
+  }
+
+  function beginImpactPlacement() {
+    setDetectState("idle");
+    setDetectProgress(0);
+    setDetectConfidence(null);
+    setDetectStage("Waiting for a new impact point.");
+    setDetectStats(null);
+    setDetectPoints([]);
+    setStartPoint(null);
+    setApexPoint(null);
+    setEndPoint(null);
+    setLandingFrame(null);
+    setPlacementMode("start");
+    setSelectedHandle(null);
+    setStatus("Tap directly on the ball inside the visible video frame. The app now locks placement to the actual video area.");
   }
 
   function handleOverlayPointerDown(event) {
@@ -426,8 +539,7 @@ function App() {
     }
 
     if (!startPoint || impactTime == null) {
-      setPlacementMode("start");
-      setStatus("First scrub to impact, tap Mark Impact + Ball, and place the dot on the ball. Then auto detect can track from that point.");
+      beginImpactPlacement();
       return;
     }
 
@@ -685,6 +797,7 @@ function App() {
                           setVideoAspect(`${width} / ${height}`);
                           setTimelineValue(0);
                           event.currentTarget.playbackRate = playbackRate;
+                          requestAnimationFrame(() => updateFrameViewport());
                         }}
                         onTimeUpdate={(event) => setTimelineValue(event.currentTarget.currentTime)}
                         onPlay={() => setIsPlaying(true)}
@@ -705,7 +818,7 @@ function App() {
                       onPointerLeave={stopDrag}
                     >
                       <svg className="trace-svg" viewBox={`0 ${TRACE_TOP} 100 ${TRACE_BOTTOM - TRACE_TOP}`} preserveAspectRatio="none">
-                        {showTrackingLab && detectPoints.map((point, index) => (
+                        {showTrackingLab && stageDetectPoints.map((point, index) => (
                           <circle
                             key={`${point.type}-${index}`}
                             cx={point.x}
@@ -716,9 +829,9 @@ function App() {
                         ))}
                         {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
-                        {startPoint ? <TraceHandle point={startPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
-                        {apexHandle ? <TraceHandle point={apexHandle} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
-                        {endPoint ? <TraceHandle point={endPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
+                        {stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                        {stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                        {stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
                       {placementMode ? (
                         <div className="placement-banner">
@@ -841,10 +954,7 @@ function App() {
                     className="secondary-button"
                     type="button"
                     disabled={!sourceUrl}
-                    onClick={() => {
-                      setPlacementMode("start");
-                      setStatus("Tap the ball on the video. That point becomes the tracer start and the impact frame.");
-                    }}
+                    onClick={beginImpactPlacement}
                   >
                     Mark Impact + Ball
                   </button>
@@ -868,8 +978,9 @@ function App() {
                       type="button"
                       disabled={!startPoint}
                       onClick={() => {
+                        setSelectedHandle(null);
                         setPlacementMode("end");
-                        setStatus("Tap where the ball landed or disappeared. You can adjust the curve after.");
+                        setStatus("Tap the landing point inside the visible video frame. If the ball leaves frame, tap where it disappeared.");
                       }}
                     >
                       Mark Landing
