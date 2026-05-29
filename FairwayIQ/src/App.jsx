@@ -122,6 +122,18 @@ function App() {
     };
   }, [sourceUrl]);
 
+  const currentFrame = Math.max(0, Math.round(timelineValue * fps));
+  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
+  const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
+  const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
+  const shapeMode = Boolean(
+    sourceUrl &&
+      !isPlaying &&
+      placementMode !== "start" &&
+      placementMode !== "end" &&
+      (placementMode === "apex" || selectedHandle === "apex" || readyToTrace)
+  );
+
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.playbackRate = playbackRate;
@@ -137,18 +149,6 @@ function App() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [sourceUrl, videoAspect, shapeMode]);
-
-  const currentFrame = Math.max(0, Math.round(timelineValue * fps));
-  const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
-  const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
-  const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
-  const shapeMode = Boolean(
-    sourceUrl &&
-      !isPlaying &&
-      placementMode !== "start" &&
-      placementMode !== "end" &&
-      (placementMode === "apex" || selectedHandle === "apex" || readyToTrace)
-  );
 
   const apexHandle = useMemo(() => {
     return apexPoint;
