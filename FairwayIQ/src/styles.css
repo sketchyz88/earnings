@@ -476,6 +476,10 @@ code {
   padding: 14px;
 }
 
+.studio-layout.placement-focus {
+  grid-template-columns: 1fr;
+}
+
 .video-column,
 .control-column,
 .instruction-stack,
@@ -497,6 +501,13 @@ code {
   background:
     radial-gradient(circle at 50% 30%, rgba(34, 197, 94, 0.1), transparent 24rem),
     #030303;
+}
+
+.video-column.placement-focus .video-stage {
+  position: relative;
+  top: auto;
+  min-height: min(82svh, 980px);
+  max-height: none;
 }
 
 .video-stage.shape-mode {
@@ -723,6 +734,38 @@ input[type="range"] {
   align-content: start;
 }
 
+.control-column.placement-focus {
+  align-content: start;
+}
+
+.focus-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(255, 45, 36, 0.28);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 45, 36, 0.1), transparent 12rem),
+    rgba(255, 255, 255, 0.045);
+}
+
+.focus-panel span {
+  color: var(--cream-dim);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.focus-panel strong {
+  color: var(--cream);
+  font-size: 1rem;
+}
+
+.focus-notice {
+  border-color: rgba(255, 45, 36, 0.24);
+}
+
 .instruction-card,
 .lab-panel,
 .shape-panel,
@@ -915,6 +958,10 @@ input[type="range"] {
     padding: 18px;
   }
 
+  .studio-layout.placement-focus {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .product-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -923,6 +970,12 @@ input[type="range"] {
     max-height: calc(100svh - 104px);
     overflow: auto;
     padding-right: 4px;
+  }
+
+  .control-column.placement-focus {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 }
 

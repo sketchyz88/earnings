@@ -126,6 +126,7 @@ function App() {
   const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
+  const placementFocusMode = Boolean(sourceUrl && (placementMode === "start" || placementMode === "end"));
   const shapeMode = Boolean(
     sourceUrl &&
       !isPlaying &&
@@ -776,8 +777,8 @@ function App() {
             ))}
           </div>
 
-          <div className="studio-layout">
-            <section className="video-column">
+          <div className={placementFocusMode ? "studio-layout placement-focus" : "studio-layout"}>
+            <section className={placementFocusMode ? "video-column placement-focus" : "video-column"}>
               <div className={shapeMode ? "video-stage shape-mode" : "video-stage"} style={{ "--video-aspect": videoAspect }}>
                 {sourceUrl ? (
                   <>
@@ -836,7 +837,7 @@ function App() {
                       {placementMode ? (
                         <div className="placement-banner">
                           <strong>{placementMode === "start" ? "Tap the ball at impact" : placementMode === "end" ? "Tap the landing point" : "Tap the apex point"}</strong>
-                          <span>{placementMode === "end" ? "If the ball leaves frame, tap where it disappeared." : "You can drag this dot later."}</span>
+                          <span>{placementMode === "end" ? "If the ball leaves frame, tap where it disappeared." : "The app is locked to the visible video area only."}</span>
                         </div>
                       ) : null}
                     </div>
@@ -882,9 +883,19 @@ function App() {
                   />
                 </label>
               ) : null}
+
+              {placementFocusMode ? (
+                <div className="focus-panel">
+                  <div>
+                    <span>{placementMode === "start" ? "Impact placement" : "Landing placement"}</span>
+                    <strong>{placementMode === "start" ? "Tap the ball inside the large video." : "Tap the finish point inside the large video."}</strong>
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => setPlacementMode(null)}>Cancel Placement</button>
+                </div>
+              ) : null}
             </section>
 
-            <aside className="control-column">
+            <aside className={placementFocusMode ? "control-column placement-focus" : "control-column"}>
               <div className="import-actions">
                 <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
                 <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload Existing Video</button>
@@ -892,10 +903,11 @@ function App() {
                 <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
               </div>
 
-              <div className="notice">
+              <div className={placementFocusMode ? "notice focus-notice" : "notice"}>
                 Smart assist now starts after you mark the ball at impact. That is much more reliable than guessing the whole swing from a huge frame.
               </div>
 
+              {!placementFocusMode ? (
               <div className="lab-panel">
                 <div className="range-row">
                   <span>Camera setup</span>
@@ -922,7 +934,9 @@ function App() {
                   {showTrackingLab ? "Hide Tracking Lab" : "Show Tracking Lab"}
                 </button>
               </div>
+              ) : null}
 
+              {!placementFocusMode ? (
               <div className="detect-panel">
                 <div className="range-row">
                   <span>Auto detect assist</span>
@@ -944,6 +958,7 @@ function App() {
                   </div>
                 ) : null}
               </div>
+              ) : null}
 
               <div className="instruction-stack">
                 <article className={activeStep === 1 ? "instruction-card active" : "instruction-card"}>
@@ -1010,12 +1025,15 @@ function App() {
                 </article>
               </div>
 
+              {!placementFocusMode ? (
               <div className="shape-panel">
                 <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
                 <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
                 <p className="shape-note">Use the dots for shape. Use speed for how fast the tracer appears during replay/export.</p>
               </div>
+              ) : null}
 
+              {!placementFocusMode ? (
               <div className="speed-panel">
                 <div className="range-row">
                   <span>Replay speed</span>
@@ -1029,7 +1047,9 @@ function App() {
                   ))}
                 </div>
               </div>
+              ) : null}
 
+              {!placementFocusMode ? (
               <div className="anchor-grid">
                 <div><span>Impact</span><strong>{impactFrame ?? "--"}</strong></div>
                 <div><span>Apex</span><strong>{apexPoint ? "Set" : "--"}</strong></div>
@@ -1038,7 +1058,9 @@ function App() {
                 <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
                 <div><span>Assist</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
               </div>
+              ) : null}
 
+              {!placementFocusMode ? (
               <div className="export-panel">
                 <button className="primary-button export-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerVideo}>
                   {exportState === "recording" ? `Exporting ${exportProgress}%` : "Export Tracer Video"}
@@ -1050,6 +1072,7 @@ function App() {
                   Pro mode exports a replay clip with the red tracer drawn into the video. Still export is only a fallback.
                 </p>
               </div>
+              ) : null}
             </aside>
           </div>
         </div>
