@@ -75,14 +75,17 @@ function App() {
   const uploadInputRef = useRef(null);
   const liveInputRef = useRef(null);
   const videoRef = useRef(null);
+  const previewCanvasRef = useRef(null);
   const videoFrameRef = useRef(null);
   const overlayRef = useRef(null);
   const dragRef = useRef(null);
+  const previewRafRef = useRef(0);
 
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceMode, setSourceMode] = useState("upload");
   const [videoAspect, setVideoAspect] = useState("16 / 9");
+  const [videoOrientation, setVideoOrientation] = useState("landscape");
   const [duration, setDuration] = useState(0);
   const [timelineValue, setTimelineValue] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(0.5);
@@ -97,9 +100,13 @@ function App() {
   const [detectStage, setDetectStage] = useState("Waiting for impact point.");
   const [detectStats, setDetectStats] = useState(null);
   const [detectPoints, setDetectPoints] = useState([]);
+  const [swingAssistState, setSwingAssistState] = useState("idle");
+  const [swingAssistProgress, setSwingAssistProgress] = useState(0);
+  const [swingWindow, setSwingWindow] = useState(null);
   const [cameraProfile, setCameraProfile] = useState("wide_fairway");
   const [showTrackingLab, setShowTrackingLab] = useState(true);
   const [frameViewport, setFrameViewport] = useState({ left: 0, top: 0, width: 100, height: 100 });
+  const [workflowMode, setWorkflowMode] = useState("course_quick");
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
@@ -115,18 +122,59 @@ function App() {
     flightTime: 1.25,
     glow: 82,
   });
+  const sampleSeedAppliedRef = useRef(false);
+  const sampleAutoRunPendingRef = useRef(false);
+  const swingAssistAutoRunRef = useRef(false);
 
   useEffect(() => {
     return () => {
       if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      if (previewRafRef.current) cancelAnimationFrame(previewRafRef.current);
     };
   }, [sourceUrl]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sample = params.get("sample");
+    if (sample === "test-swing") {
+      loadVideoSource("/test-swing.mov", "test-swing.mov", "sample", false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (sampleSeedAppliedRef.current || !sourceUrl || duration <= 0) return;
+    if (params.get("sample") !== "test-swing" || params.get("seed") !== "putt56") return;
+
+    sampleSeedAppliedRef.current = true;
+    sampleAutoRunPendingRef.current = true;
+    setCameraProfile("range_tight");
+    setTimelineValue(56);
+    setImpactTime(56);
+    setImpactFrame(Math.round(56 * fps));
+    setStartPoint({ x: 49.2, y: 71.1 });
+    setStatus("Loaded test seed at impact. Running Track Assist Beta on the sample swing.");
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.currentTime = 56;
+    }
+  }, [duration, fps, sourceUrl]);
+
+  useEffect(() => {
+    if (!sampleAutoRunPendingRef.current || !sourceUrl || !startPoint || impactTime == null || detectState === "running") return;
+    sampleAutoRunPendingRef.current = false;
+    runTrackAssistBeta();
+  }, [detectState, impactTime, sourceUrl, startPoint]);
 
   const currentFrame = Math.max(0, Math.round(timelineValue * fps));
   const activeStep = !sourceUrl ? 0 : !startPoint ? 1 : !endPoint ? 2 : 3;
   const readyToTrace = Boolean(sourceUrl && startPoint && apexPoint && endPoint && impactTime != null);
   const flightEndTime = impactTime == null ? curveSettings.flightTime : impactTime + curveSettings.flightTime;
   const placementFocusMode = Boolean(sourceUrl && (placementMode === "start" || placementMode === "end"));
+  const hasSuggestedWindow = Boolean(swingWindow?.impactGuess != null);
+  const editorOpen = Boolean(sourceUrl);
+  const cinematicReplay = Boolean(sourceUrl && readyToTrace && isPlaying && !placementMode);
   const shapeMode = Boolean(
     sourceUrl &&
       !isPlaying &&
@@ -187,17 +235,10 @@ function App() {
   const stageEndPoint = endPoint ? mapLogicalPointToStagePoint(endPoint) : null;
   const stageDetectPoints = useMemo(() => detectPoints.map((point) => ({ ...mapLogicalPointToStagePoint(point), type: point.type })), [detectPoints, frameViewport]);
 
-  function handleVideoSelect(event, mode) {
-    const [file] = event.target.files || [];
-    if (!file) return;
-
-    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-
-    setSourceUrl(URL.createObjectURL(file));
-    setSourceName(file.name);
-    setSourceMode(mode);
+  function resetLoadedVideoState() {
     setDuration(0);
     setVideoAspect("16 / 9");
+    setVideoOrientation("landscape");
     setTimelineValue(0);
     setPlaybackRate(0.5);
     setIsPlaying(false);
@@ -210,6 +251,9 @@ function App() {
     setDetectStage("Waiting for impact point.");
     setDetectStats(null);
     setDetectPoints([]);
+    setSwingAssistState("idle");
+    setSwingAssistProgress(0);
+    setSwingWindow(null);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
@@ -218,7 +262,156 @@ function App() {
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
-    setStatus("Video loaded. Scrub to the exact contact frame, then tap Mark Impact + Ball and place the dot on the ball.");
+    sampleSeedAppliedRef.current = false;
+    sampleAutoRunPendingRef.current = false;
+    swingAssistAutoRunRef.current = false;
+  }
+
+  function loadVideoSource(nextUrl, nextName, mode, revokeExisting = true) {
+    if (sourceUrl && revokeExisting) URL.revokeObjectURL(sourceUrl);
+
+    setSourceUrl(nextUrl);
+    setSourceName(nextName);
+    setSourceMode(mode);
+    resetLoadedVideoState();
+    setWorkflowMode("course_quick");
+    setStatus("Video loaded. Quick Trace is the fastest path on the course: scrub to contact, mark the ball, then mark landing.");
+  }
+
+  function activateQuickTrace() {
+    setWorkflowMode("course_quick");
+    setCameraProfile("wide_fairway");
+    setShowTrackingLab(false);
+    setDetectState("idle");
+    setDetectProgress(0);
+    setDetectConfidence(null);
+    setDetectStage("Quick Trace mode is active. Mark the ball first, then mark landing.");
+    setDetectStats(null);
+    setDetectPoints([]);
+    setStatus("Quick Trace mode is active. Scrub to impact, mark the ball, then mark landing. Auto detect is optional after that.");
+  }
+
+  function activateAssistMode() {
+    setWorkflowMode("assist");
+    setShowTrackingLab(true);
+    setStatus("Assist mode is active. Use swing window and auto detect if this clip is clean enough for analysis.");
+  }
+
+  function syncVideoPreview() {
+    const video = videoRef.current;
+    const canvas = previewCanvasRef.current;
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+
+    const context = canvas.getContext("2d");
+    if (!context) return false;
+
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return true;
+  }
+
+  function scheduleVideoPreview() {
+    if (previewRafRef.current) cancelAnimationFrame(previewRafRef.current);
+    const paint = () => {
+      if (syncVideoPreview()) {
+        previewRafRef.current = 0;
+        return;
+      }
+
+      if (videoRef.current?.readyState < 2) {
+        previewRafRef.current = requestAnimationFrame(paint);
+        return;
+      }
+
+      previewRafRef.current = 0;
+    };
+
+    previewRafRef.current = requestAnimationFrame(paint);
+  }
+
+  function startPreviewLoop() {
+    if (previewRafRef.current) cancelAnimationFrame(previewRafRef.current);
+    const tick = () => {
+      syncVideoPreview();
+      if (videoRef.current && !videoRef.current.paused) {
+        previewRafRef.current = requestAnimationFrame(tick);
+      } else {
+        previewRafRef.current = 0;
+      }
+    };
+    previewRafRef.current = requestAnimationFrame(tick);
+  }
+
+  async function runSwingWindowAssist(trigger = "manual", aroundTime = null) {
+    if (!sourceUrl || swingAssistState === "running") return;
+
+    setSwingAssistState("running");
+    setSwingAssistProgress(0);
+    setSwingWindow(null);
+    setStatus("Scanning the clip for the strongest swing motion so you do not have to scrub through dead time.");
+
+    try {
+      const analysisVideo = document.createElement("video");
+      analysisVideo.src = sourceUrl;
+      analysisVideo.preload = "auto";
+      analysisVideo.muted = true;
+      analysisVideo.playsInline = true;
+
+      await loadVideoMetadata(analysisVideo);
+
+      const result = await findSwingWindow(analysisVideo, ({ progress }) => {
+        setSwingAssistProgress(progress);
+      }, { aroundTime });
+
+      setSwingAssistState("done");
+      setSwingAssistProgress(100);
+      setSwingWindow(result);
+      setTimelineValue(result.impactGuess);
+
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = result.impactGuess;
+      }
+
+      setStatus(
+        result.montageLikely
+          ? "Swing window found, but this upload looks like a multi-shot reel. The app jumped to the strongest swing section first."
+          : trigger === "auto"
+            ? "Swing window found automatically. You are parked near impact now, so marking the ball should be much faster."
+            : aroundTime != null
+              ? "Swing window refined around your current scrub position. You should be much closer to the exact swing you want to trace."
+              : "Swing window found. You are parked near impact now, so you can start tracing without scrubbing the whole video."
+      );
+    } catch (error) {
+      setSwingAssistState("error");
+      setSwingAssistProgress(0);
+      setStatus("Swing window assist could not isolate the shot on this clip. You can still scrub manually and trace it.");
+    }
+  }
+
+  function jumpToSuggestedImpact() {
+    if (!swingWindow || !videoRef.current) return;
+
+    videoRef.current.pause();
+    videoRef.current.currentTime = swingWindow.impactGuess;
+    setTimelineValue(swingWindow.impactGuess);
+    setStatus("Jumped to the suggested impact area. Fine tune with Frame +/- and then mark the ball.");
+  }
+
+  function refineSwingWindowAroundCurrentTime() {
+    runSwingWindowAssist("manual", timelineValue);
+  }
+
+  function handleVideoSelect(event, mode) {
+    const [file] = event.target.files || [];
+    if (!file) return;
+
+    loadVideoSource(URL.createObjectURL(file), file.name, mode);
     event.target.value = "";
   }
 
@@ -243,6 +436,7 @@ function App() {
 
   function replayTrace() {
     if (impactTime == null || !videoRef.current) return;
+    setSelectedHandle(null);
     videoRef.current.currentTime = impactTime;
     setTimelineValue(impactTime);
     videoRef.current.playbackRate = playbackRate;
@@ -693,65 +887,272 @@ function App() {
   }
 
   return (
-    <main className="site-shell">
-      <header className="brand-nav">
-        <a className="wordmark" href="#top" aria-label="ifonlyicouldputt home">ifonlyicouldputt</a>
+    <main className={editorOpen ? "site-shell editor-open" : "site-shell tracer-shell"}>
+      <header className="brand-nav tracer-nav">
+        <a className="wordmark" href="#tracker" aria-label="ifonlyicouldputt tracer">ifonlyicouldputt</a>
         <nav className="nav-links" aria-label="Primary navigation">
-          <a href="#drop">Drop</a>
           <a href="#tracker">Tracer</a>
           <a href="mailto:ifonlyicouldputt@icloud.com">Contact</a>
         </nav>
       </header>
 
-      <section id="top" className="hero-grid">
-        <div className="hero-copy">
-          <p className="hero-script">The short game. Shorter.</p>
-          <h1>Golf clothing and shot tracing built for everyday players.</h1>
-          <p>
-            ifonlyicouldputt is a golf brand building premium short-game apparel and a simple tracer studio for turning real swing videos into clean red ball-flight edits.
-          </p>
-          <div className="hero-actions">
-            <a className="primary-button" href="#tracker">Open shot tracer</a>
-            <a className="secondary-button" href="#drop">View coming soon drop</a>
+      {!editorOpen ? (
+        <section className="tool-home">
+          <div className="tool-home-copy">
+            <span>Shot tracer</span>
+            <h1>Build the tracer fast.</h1>
+            <p>
+              Upload a golf video, mark impact, mark landing, shape the flight, and replay it. No extra clutter.
+            </p>
           </div>
-        </div>
-        <div className="hero-board">
-          <img src="/brand/ifonlyicouldputt-performance-polo.png" alt="ifonlyicouldputt performance polo design board" />
-          <div className="hero-board-card">
-            <span>EST. 2026</span>
-            <strong>ifonlyicouldputt</strong>
-          </div>
-        </div>
-      </section>
 
-      <section id="drop" className="drop-section">
-        <div className="section-heading">
-          <span>Coming soon</span>
-          <h2>First drop, built around the short game.</h2>
-        </div>
-        <div className="product-grid">
-          {PRODUCT_DROPS.map((product) => (
-            <article className="product-card" key={product.name}>
-              {product.image ? (
-                <img src={product.image} alt={`${product.name} design concept`} />
-              ) : (
-                <div className="product-art"><strong>{product.motif}</strong></div>
-              )}
-              <div className="product-card-copy">
-                <span>{product.tag} · Coming soon</span>
-                <h3>{product.name}</h3>
-                <p>{product.detail}</p>
+          <div className="tool-home-actions">
+            <button className="primary-button" type="button" onClick={() => uploadInputRef.current?.click()}>
+              Upload Swing Video
+            </button>
+            <button className="secondary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>
+              Record Live Swing
+            </button>
+            <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
+            <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
+          </div>
+
+          <div className="tool-home-steps">
+            <div><span>01</span><strong>Mark impact</strong></div>
+            <div><span>02</span><strong>Mark landing</strong></div>
+            <div><span>03</span><strong>Shape and replay</strong></div>
+          </div>
+        </section>
+      ) : null}
+
+      <section id="tracker" className={editorOpen ? "tracker-section editor-open tracer-app-open" : "tracker-section"}>
+        {editorOpen ? (
+          <div className="course-editor">
+            <div className="course-editor-head">
+              <div>
+                <span>Tracer workspace</span>
+                <h2>Impact. Landing. Shape.</h2>
+                <p>{status}</p>
               </div>
-            </article>
-          ))}
-        </div>
-      </section>
+              <div className="course-editor-stats">
+                <span>{formatTime(timelineValue)} / {formatTime(duration)}</span>
+                <strong>{playbackRate}x</strong>
+              </div>
+            </div>
 
-      <section id="tracker" className="tracker-section">
+            <div className="course-editor-stage">
+              <div
+                className={[
+                  "video-stage",
+                  "course-stage",
+                  shapeMode ? "shape-mode" : "",
+                  videoOrientation === "portrait" ? "portrait-stage" : "landscape-stage",
+                ].filter(Boolean).join(" ")}
+                style={{ "--video-aspect": videoAspect }}
+              >
+                <div ref={videoFrameRef} className="video-frame">
+                  <video
+                    ref={videoRef}
+                    className="tracer-video"
+                    src={sourceUrl}
+                    playsInline
+                    preload="metadata"
+                    controls={false}
+                    onLoadedMetadata={(event) => {
+                      const nextDuration = event.currentTarget.duration || 0;
+                      const width = event.currentTarget.videoWidth || 16;
+                      const height = event.currentTarget.videoHeight || 9;
+                      setDuration(nextDuration);
+                      setVideoAspect(`${width} / ${height}`);
+                      setVideoOrientation(height > width ? "portrait" : "landscape");
+                      setTimelineValue(0);
+                      event.currentTarget.playbackRate = playbackRate;
+                      if (modeLooksLikeCourseClip(nextDuration, width, height, sourceMode)) {
+                        setWorkflowMode("course_quick");
+                        setCameraProfile("wide_fairway");
+                        setShowTrackingLab(false);
+                        setStatus("Course clip loaded. Start with Quick Trace: scrub to impact, mark the ball, then mark landing.");
+                      } else {
+                        setStatus("Video loaded. Scrub to the exact contact frame, then tap Mark Impact + Ball and place the dot on the ball.");
+                      }
+                      requestAnimationFrame(() => updateFrameViewport());
+                    }}
+                    onLoadedData={() => {
+                      scheduleVideoPreview();
+                    }}
+                    onCanPlay={() => {
+                      scheduleVideoPreview();
+                    }}
+                    onSeeked={() => {
+                      scheduleVideoPreview();
+                    }}
+                    onTimeUpdate={(event) => {
+                      setTimelineValue(event.currentTarget.currentTime);
+                      scheduleVideoPreview();
+                    }}
+                    onPlay={() => {
+                      setIsPlaying(true);
+                      startPreviewLoop();
+                    }}
+                    onPause={() => {
+                      setIsPlaying(false);
+                      scheduleVideoPreview();
+                    }}
+                    onError={() => {
+                      setVideoError("This video format is not loading in this browser. If it is an iPhone HEVC .MOV, try exporting as H.264 MP4.");
+                      setStatus("The video could not load here. The tracer works best with H.264 MP4 or Safari-compatible MOV files.");
+                    }}
+                  />
+                </div>
+                <div
+                  ref={overlayRef}
+                  className={placementMode ? "trace-overlay placing" : "trace-overlay"}
+                  onPointerDown={handleOverlayPointerDown}
+                  onPointerMove={moveDraggedHandle}
+                  onPointerUp={stopDrag}
+                  onPointerCancel={stopDrag}
+                  onPointerLeave={stopDrag}
+                >
+                  <svg className="trace-svg" viewBox={`0 ${TRACE_TOP} 100 ${TRACE_BOTTOM - TRACE_TOP}`} preserveAspectRatio="none">
+                    {!cinematicReplay && showTrackingLab && stageDetectPoints.map((point, index) => (
+                      <circle
+                        key={`${point.type}-${index}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={point.type === "projected" ? 0.48 : 0.62}
+                        className={point.type === "projected" ? "track-point projected" : "track-point detected"}
+                      />
+                    ))}
+                    {!cinematicReplay && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
+                    {tracePath ? (
+                      <>
+                        <path d={tracePath} className="trace-line-shadow" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
+                        <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
+                      </>
+                    ) : null}
+                    {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                    {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                    {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
+                  </svg>
+                  {placementMode ? (
+                    <div className="placement-banner">
+                      <strong>{placementMode === "start" ? "Tap the ball at impact" : placementMode === "end" ? "Tap the landing point" : "Tap the apex point"}</strong>
+                      <span>{placementMode === "end" ? "If the ball leaves frame, tap where it disappeared." : "The app is locked to the visible video area only."}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            {videoError ? <div className="notice error">{videoError}</div> : null}
+
+            <div className="course-editor-controls">
+              <div className="transport-panel course-transport">
+                <button className="secondary-button" type="button" onClick={togglePlayback} disabled={!sourceUrl}>{isPlaying ? "Pause" : "Play"}</button>
+                <button className="secondary-button" type="button" onClick={() => stepFrame(-1)} disabled={!sourceUrl}>Frame -</button>
+                <button className="secondary-button" type="button" onClick={() => stepFrame(1)} disabled={!sourceUrl}>Frame +</button>
+                <button className="primary-button" type="button" onClick={replayTrace} disabled={!readyToTrace}>Replay Trace</button>
+              </div>
+
+              <label className="field timeline-field">
+                <div className="range-row">
+                  <span>{formatTime(timelineValue)}</span>
+                  <strong>{formatTime(duration)}</strong>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max={duration || 0}
+                  step="0.01"
+                  value={timelineValue}
+                  onInput={(event) => {
+                    const nextValue = Number(event.target.value);
+                    setTimelineValue(nextValue);
+                    if (videoRef.current) videoRef.current.currentTime = nextValue;
+                  }}
+                />
+              </label>
+
+              <div className="course-step-grid">
+                <button className="instruction-card active" type="button" onClick={beginImpactPlacement}>
+                  <span>01</span>
+                  <h3>Mark Impact</h3>
+                  <p>Tap the ball at contact.</p>
+                </button>
+                <button
+                  className={startPoint ? "instruction-card active" : "instruction-card"}
+                  type="button"
+                  disabled={!startPoint}
+                  onClick={() => {
+                    setSelectedHandle(null);
+                    setPlacementMode("end");
+                    setStatus("Tap the landing point inside the visible video frame. If the ball leaves frame, tap where it disappeared.");
+                  }}
+                >
+                  <span>02</span>
+                  <h3>Mark Landing</h3>
+                  <p>Tap where the shot ends.</p>
+                </button>
+                <button
+                  className={readyToTrace ? "instruction-card active" : "instruction-card"}
+                  type="button"
+                  disabled={!startPoint}
+                  onClick={() => {
+                    setPlacementMode("apex");
+                    setStatus("Tap the highest point of the tracer arc.");
+                  }}
+                >
+                  <span>03</span>
+                  <h3>Shape Arc</h3>
+                  <p>Set the flight height.</p>
+                </button>
+              </div>
+
+              <div className="course-editor-actions">
+                <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
+                <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload New Video</button>
+                <button className="secondary-button" type="button" onClick={resetTrace} disabled={!startPoint && !apexPoint && !endPoint}>Reset Trace</button>
+                <button className="secondary-button" type="button" disabled={detectState === "running"} onClick={handleTrackAssistPress}>
+                  {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect"}
+                </button>
+                <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
+                <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
+              </div>
+
+              <details className="advanced-tools">
+                <summary>Advanced</summary>
+                <div className="advanced-grid">
+                  <div className="quick-trace-panel">
+                    <div className="range-row">
+                      <span>Workflow</span>
+                      <strong>{workflowMode === "course_quick" ? "Quick Trace" : "Assist"}</strong>
+                    </div>
+                    <div className="tiny-grid">
+                      <button className={workflowMode === "course_quick" ? "secondary-button active-lab" : "secondary-button"} type="button" onClick={activateQuickTrace}>Quick Trace</button>
+                      <button className={workflowMode === "assist" ? "secondary-button active-lab" : "secondary-button"} type="button" onClick={activateAssistMode}>Assist Mode</button>
+                      <button className="secondary-button" type="button" disabled={!sourceUrl || swingAssistState === "running"} onClick={() => runSwingWindowAssist("manual")}>
+                        {swingAssistState === "running" ? `Finding Swing ${swingAssistProgress}%` : "Find Swing Window"}
+                      </button>
+                      <button className="secondary-button" type="button" onClick={() => setShowTrackingLab((current) => !current)}>
+                        {showTrackingLab ? "Hide Tracking Lab" : "Show Tracking Lab"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="shape-panel">
+                    <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
+                    <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        ) : (
+        <>
         <div className="tracker-head">
           <div>
-            <span>Shot tracer studio</span>
-            <h2>Step by step, no guessing.</h2>
+            <span>Tracer workspace</span>
+            <h2>{editorOpen ? "Mark it. Shape it. Replay it." : "Simple golf tracer."}</h2>
             <p>{status}</p>
           </div>
           <div className="tracker-metrics">
@@ -779,7 +1180,14 @@ function App() {
 
           <div className={placementFocusMode ? "studio-layout placement-focus" : "studio-layout"}>
             <section className={placementFocusMode ? "video-column placement-focus" : "video-column"}>
-              <div className={shapeMode ? "video-stage shape-mode" : "video-stage"} style={{ "--video-aspect": videoAspect }}>
+              <div
+                className={[
+                  "video-stage",
+                  shapeMode ? "shape-mode" : "",
+                  videoOrientation === "portrait" ? "portrait-stage" : "landscape-stage",
+                ].filter(Boolean).join(" ")}
+                style={{ "--video-aspect": videoAspect }}
+              >
                 {sourceUrl ? (
                   <>
                     <div ref={videoFrameRef} className="video-frame">
@@ -796,13 +1204,41 @@ function App() {
                           const height = event.currentTarget.videoHeight || 9;
                           setDuration(nextDuration);
                           setVideoAspect(`${width} / ${height}`);
+                          setVideoOrientation(height > width ? "portrait" : "landscape");
                           setTimelineValue(0);
                           event.currentTarget.playbackRate = playbackRate;
+                          if (modeLooksLikeCourseClip(nextDuration, width, height, sourceMode)) {
+                            setWorkflowMode("course_quick");
+                            setCameraProfile("wide_fairway");
+                            setShowTrackingLab(false);
+                            setStatus("Course clip loaded. Start with Quick Trace: scrub to impact, mark the ball, then mark landing.");
+                          } else {
+                            setStatus("Video loaded. Scrub to the exact contact frame, then tap Mark Impact + Ball and place the dot on the ball.");
+                          }
                           requestAnimationFrame(() => updateFrameViewport());
+                          requestAnimationFrame(() => syncVideoPreview());
                         }}
-                        onTimeUpdate={(event) => setTimelineValue(event.currentTarget.currentTime)}
-                        onPlay={() => setIsPlaying(true)}
-                        onPause={() => setIsPlaying(false)}
+                        onLoadedData={() => {
+                          scheduleVideoPreview();
+                        }}
+                        onCanPlay={() => {
+                          scheduleVideoPreview();
+                        }}
+                        onSeeked={() => {
+                          scheduleVideoPreview();
+                        }}
+                        onTimeUpdate={(event) => {
+                          setTimelineValue(event.currentTarget.currentTime);
+                          scheduleVideoPreview();
+                        }}
+                        onPlay={() => {
+                          setIsPlaying(true);
+                          startPreviewLoop();
+                        }}
+                        onPause={() => {
+                          setIsPlaying(false);
+                          scheduleVideoPreview();
+                        }}
                         onError={() => {
                           setVideoError("This video format is not loading in this browser. If it is an iPhone HEVC .MOV, try exporting as H.264 MP4.");
                           setStatus("The video could not load here. The tracer works best with H.264 MP4 or Safari-compatible MOV files.");
@@ -819,7 +1255,7 @@ function App() {
                       onPointerLeave={stopDrag}
                     >
                       <svg className="trace-svg" viewBox={`0 ${TRACE_TOP} 100 ${TRACE_BOTTOM - TRACE_TOP}`} preserveAspectRatio="none">
-                        {showTrackingLab && stageDetectPoints.map((point, index) => (
+                        {!cinematicReplay && showTrackingLab && stageDetectPoints.map((point, index) => (
                           <circle
                             key={`${point.type}-${index}`}
                             cx={point.x}
@@ -828,11 +1264,16 @@ function App() {
                             className={point.type === "projected" ? "track-point projected" : "track-point detected"}
                           />
                         ))}
-                        {guidePath ? <path d={guidePath} className="trace-guide" /> : null}
-                        {tracePath ? <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} /> : null}
-                        {stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
-                        {stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
-                        {stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
+                        {!cinematicReplay && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
+                        {tracePath ? (
+                          <>
+                            <path d={tracePath} className="trace-line-shadow" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
+                            <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
+                          </>
+                        ) : null}
+                        {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                        {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                        {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
                       {placementMode ? (
                         <div className="placement-banner">
@@ -884,6 +1325,14 @@ function App() {
                 </label>
               ) : null}
 
+              {sourceUrl && swingWindow ? (
+                <div className="notice">
+                  <strong>Swing window</strong>
+                  <span>{`${formatTime(swingWindow.start)} - ${formatTime(swingWindow.end)} · impact guess ${formatTime(swingWindow.impactGuess)}`}</span>
+                  {swingWindow.montageLikely ? <span>This clip looks like a reel with multiple swings, so the app focused on the strongest section first.</span> : null}
+                </div>
+              ) : null}
+
               {placementFocusMode ? (
                 <div className="focus-panel">
                   <div>
@@ -893,74 +1342,65 @@ function App() {
                   <button className="secondary-button" type="button" onClick={() => setPlacementMode(null)}>Cancel Placement</button>
                 </div>
               ) : null}
-            </section>
 
-            <aside className={placementFocusMode ? "control-column placement-focus" : "control-column"}>
-              <div className="import-actions">
-                <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
-                <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload Existing Video</button>
-                <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
-                <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
-              </div>
+              {editorOpen ? (
+                <div className="editor-actions">
+                  <button className="primary-button record-button" type="button" onClick={() => liveInputRef.current?.click()}>Record Live Swing</button>
+                  <button className="secondary-button" type="button" onClick={() => uploadInputRef.current?.click()}>Upload Existing Video</button>
+                  <input ref={liveInputRef} className="sr-only" type="file" accept="video/*" capture="environment" onChange={(event) => handleVideoSelect(event, "live")} />
+                  <input ref={uploadInputRef} className="sr-only" type="file" accept="video/*" onChange={(event) => handleVideoSelect(event, "upload")} />
+                </div>
+              ) : null}
 
               <div className={placementFocusMode ? "notice focus-notice" : "notice"}>
                 Smart assist now starts after you mark the ball at impact. That is much more reliable than guessing the whole swing from a huge frame.
               </div>
 
-              {!placementFocusMode ? (
-              <div className="lab-panel">
-                <div className="range-row">
-                  <span>Camera setup</span>
-                  <strong>{CAMERA_PROFILES[cameraProfile].label}</strong>
-                </div>
-                <div className="profile-grid">
-                  {Object.entries(CAMERA_PROFILES).map(([key, profile]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      className={cameraProfile === key ? "profile-pill active" : "profile-pill"}
-                      onClick={() => setCameraProfile(key)}
-                    >
-                      {profile.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="shape-note">{CAMERA_PROFILES[cameraProfile].detail}</p>
-                <button
-                  className={showTrackingLab ? "secondary-button active-lab" : "secondary-button"}
-                  type="button"
-                  onClick={() => setShowTrackingLab((current) => !current)}
-                >
-                  {showTrackingLab ? "Hide Tracking Lab" : "Show Tracking Lab"}
-                </button>
-              </div>
-              ) : null}
-
-              {!placementFocusMode ? (
-              <div className="detect-panel">
-                <div className="range-row">
-                  <span>Auto detect assist</span>
-                  <strong>{detectConfidence == null ? "Ready" : `${detectConfidence}%`}</strong>
-                </div>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={detectState === "running"}
-                  onClick={handleTrackAssistPress}
-                >
-                  {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
-                </button>
-                <p className="shape-note">{detectStage}</p>
-                {detectStats ? (
-                  <div className="detect-stats">
-                    <span>{detectStats.framesScanned} frames scanned</span>
-                    <span>{detectStats.detectionsFound} flight hits</span>
+              {sourceUrl ? (
+                <div className="quick-trace-panel">
+                  <div className="range-row">
+                    <span>Workflow</span>
+                    <strong>{workflowMode === "course_quick" ? "Quick Trace" : "Assist"}</strong>
                   </div>
-                ) : null}
-              </div>
+                  <p className="shape-note">
+                    On-course clips are usually fastest with manual impact and landing. Use assist only if the video is clean and the ball stays visible.
+                  </p>
+                  <div className="tiny-grid">
+                    <button
+                      className={workflowMode === "course_quick" ? "secondary-button active-lab" : "secondary-button"}
+                      type="button"
+                      onClick={activateQuickTrace}
+                    >
+                      Quick Trace
+                    </button>
+                    <button
+                      className={workflowMode === "assist" ? "secondary-button active-lab" : "secondary-button"}
+                      type="button"
+                      onClick={activateAssistMode}
+                    >
+                      Assist Mode
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={!sourceUrl || swingAssistState === "running"}
+                      onClick={() => runSwingWindowAssist("manual")}
+                    >
+                      {swingAssistState === "running" ? `Finding Swing ${swingAssistProgress}%` : "Find Swing Window"}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={detectState === "running"}
+                      onClick={handleTrackAssistPress}
+                    >
+                      {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
+                    </button>
+                  </div>
+                </div>
               ) : null}
 
-              <div className="instruction-stack">
+              <div className="manual-steps">
                 <article className={activeStep === 1 ? "instruction-card active" : "instruction-card"}>
                   <span>01</span>
                   <h3>Find impact</h3>
@@ -1026,56 +1466,150 @@ function App() {
               </div>
 
               {!placementFocusMode ? (
-              <div className="shape-panel">
-                <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
-                <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
-                <p className="shape-note">Use the dots for shape. Use speed for how fast the tracer appears during replay/export.</p>
-              </div>
-              ) : null}
-
-              {!placementFocusMode ? (
-              <div className="speed-panel">
-                <div className="range-row">
-                  <span>Replay speed</span>
-                  <strong>{playbackRate}x</strong>
-                </div>
-                <div className="preset-row">
-                  {PLAYBACK_PRESETS.map((preset) => (
-                    <button key={preset} type="button" className={preset === playbackRate ? "speed-pill active" : "speed-pill"} onClick={() => setPlaybackRate(preset)}>
-                      {preset}x
+              <details className="advanced-tools">
+                <summary>Tracking assist, speed, and export</summary>
+                <div className="advanced-grid">
+                  <div className="lab-panel">
+                    <div className="range-row">
+                      <span>Swing window assist</span>
+                      <strong>{swingAssistState === "running" ? `${swingAssistProgress}%` : swingWindow ? "Ready" : "Idle"}</strong>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={!sourceUrl || swingAssistState === "running"}
+                      onClick={() => runSwingWindowAssist("manual")}
+                    >
+                      {swingAssistState === "running" ? `Finding Swing ${swingAssistProgress}%` : "Find Swing Window"}
                     </button>
-                  ))}
+                    <div className="tiny-grid">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={!hasSuggestedWindow}
+                        onClick={jumpToSuggestedImpact}
+                      >
+                        Go to Impact Guess
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={!hasSuggestedWindow}
+                        onClick={beginImpactPlacement}
+                      >
+                        Mark Ball There
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={!sourceUrl || swingAssistState === "running"}
+                        onClick={refineSwingWindowAroundCurrentTime}
+                      >
+                        Refine Around Here
+                      </button>
+                    </div>
+                    <p className="shape-note">
+                      Best for long clips and stitched reels. The app scans for the strongest swing motion and jumps you near contact first.
+                    </p>
+                  </div>
+
+                  <div className="detect-panel">
+                    <div className="range-row">
+                      <span>Auto detect assist</span>
+                      <strong>{detectConfidence == null ? "Ready" : `${detectConfidence}%`}</strong>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={detectState === "running"}
+                      onClick={handleTrackAssistPress}
+                    >
+                      {detectState === "running" ? `Auto Detect ${detectProgress}%` : "Auto Detect From Ball"}
+                    </button>
+                    <p className="shape-note">{detectStage}</p>
+                    {detectStats ? (
+                      <div className="detect-stats">
+                        <span>{detectStats.framesScanned} frames scanned</span>
+                        <span>{detectStats.detectionsFound} flight hits</span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="lab-panel">
+                    <div className="range-row">
+                      <span>Camera setup</span>
+                      <strong>{CAMERA_PROFILES[cameraProfile].label}</strong>
+                    </div>
+                    <div className="profile-grid">
+                      {Object.entries(CAMERA_PROFILES).map(([key, profile]) => (
+                        <button
+                          key={key}
+                          type="button"
+                          className={cameraProfile === key ? "profile-pill active" : "profile-pill"}
+                          onClick={() => setCameraProfile(key)}
+                        >
+                          {profile.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="shape-note">{CAMERA_PROFILES[cameraProfile].detail}</p>
+                    <button
+                      className={showTrackingLab ? "secondary-button active-lab" : "secondary-button"}
+                      type="button"
+                      onClick={() => setShowTrackingLab((current) => !current)}
+                    >
+                      {showTrackingLab ? "Hide Tracking Lab" : "Show Tracking Lab"}
+                    </button>
+                  </div>
+
+                  <div className="shape-panel">
+                    <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
+                    <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
+                    <p className="shape-note">Use the dots for shape. Use speed for how fast the tracer appears during replay and export.</p>
+                  </div>
+
+                  <div className="speed-panel">
+                    <div className="range-row">
+                      <span>Replay speed</span>
+                      <strong>{playbackRate}x</strong>
+                    </div>
+                    <div className="preset-row">
+                      {PLAYBACK_PRESETS.map((preset) => (
+                        <button key={preset} type="button" className={preset === playbackRate ? "speed-pill active" : "speed-pill"} onClick={() => setPlaybackRate(preset)}>
+                          {preset}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="anchor-grid">
+                    <div><span>Impact</span><strong>{impactFrame ?? "--"}</strong></div>
+                    <div><span>Apex</span><strong>{apexPoint ? "Set" : "--"}</strong></div>
+                    <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
+                    <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
+                    <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
+                    <div><span>Assist</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
+                  </div>
+
+                  <div className="export-panel">
+                    <button className="primary-button export-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerVideo}>
+                      {exportState === "recording" ? `Exporting ${exportProgress}%` : "Export Tracer Video"}
+                    </button>
+                    <button className="secondary-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerSnapshot}>
+                      Export Still Backup
+                    </button>
+                    <p>
+                      Pro mode exports a replay clip with the red tracer drawn into the video. Still export is only a fallback.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              </details>
               ) : null}
-
-              {!placementFocusMode ? (
-              <div className="anchor-grid">
-                <div><span>Impact</span><strong>{impactFrame ?? "--"}</strong></div>
-                <div><span>Apex</span><strong>{apexPoint ? "Set" : "--"}</strong></div>
-                <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
-                <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
-                <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
-                <div><span>Assist</span><strong>{detectConfidence == null ? "--" : `${detectConfidence}%`}</strong></div>
-              </div>
-              ) : null}
-
-              {!placementFocusMode ? (
-              <div className="export-panel">
-                <button className="primary-button export-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerVideo}>
-                  {exportState === "recording" ? `Exporting ${exportProgress}%` : "Export Tracer Video"}
-                </button>
-                <button className="secondary-button" type="button" disabled={!readyToTrace || exportState === "recording"} onClick={exportTracerSnapshot}>
-                  Export Still Backup
-                </button>
-                <p>
-                  Pro mode exports a replay clip with the red tracer drawn into the video. Still export is only a fallback.
-                </p>
-              </div>
-              ) : null}
-            </aside>
+            </section>
           </div>
         </div>
+        </>
+        )}
       </section>
     </main>
   );
@@ -1100,6 +1634,105 @@ function RangeField({ label, value, min, max, disabled, onChange }) {
       <input type="range" min={min} max={max} value={value} disabled={disabled} onInput={(event) => onChange(Number(event.target.value))} />
     </label>
   );
+}
+
+function modeLooksLikeCourseClip(duration, width, height, sourceMode) {
+  const portrait = height > width;
+  return sourceMode === "live" || duration > 20 || portrait;
+}
+
+async function findSwingWindow(video, onUpdate, options = {}) {
+  const aspect = (video.videoWidth || 16) / Math.max(video.videoHeight || 9, 1);
+  const sampleWidth = 144;
+  const sampleHeight = Math.max(220, Math.round(sampleWidth / Math.max(aspect, 0.2)));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Swing window assist unavailable.");
+
+  canvas.width = sampleWidth;
+  canvas.height = sampleHeight;
+
+  const duration = Math.max(video.duration || 0, 0);
+  const aroundTime = Number.isFinite(options.aroundTime) ? options.aroundTime : null;
+  const step = duration > 90 ? 0.6 : duration > 45 ? 0.4 : 0.25;
+  const baseStart = duration > 20 ? 4 : step;
+  const startTime = aroundTime == null ? baseStart : clamp(aroundTime - 10, 0, Math.max(duration - step, 0));
+  const endTime = aroundTime == null
+    ? Math.max(duration - Math.min(3, duration * 0.08), startTime + step)
+    : clamp(Math.max(aroundTime + 10, startTime + step), step, duration);
+  const samples = [];
+  let previousFrame = await captureVideoFrame(video, Math.max(startTime - step, 0), canvas, context);
+
+  for (let time = startTime; time <= endTime; time += step) {
+    const frame = await captureVideoFrame(video, time, canvas, context);
+    const score = measureSwingMotion(previousFrame, frame, sampleWidth, sampleHeight);
+    samples.push({ time, score });
+    previousFrame = frame;
+    onUpdate?.({ progress: Math.round(mapRange(time, startTime, Math.max(endTime, startTime), 6, 100)) });
+  }
+
+  if (!samples.length) {
+    throw new Error("No samples collected.");
+  }
+
+  const smoothed = samples.map((sample, index) => {
+    const prev = samples[index - 1]?.score ?? sample.score;
+    const next = samples[index + 1]?.score ?? sample.score;
+    return {
+      ...sample,
+      score: prev * 0.2 + sample.score * 0.6 + next * 0.2,
+    };
+  });
+
+  const sorted = [...smoothed].sort((a, b) => b.score - a.score);
+  const peak = sorted[0];
+  const baseline = smoothed.reduce((sum, sample) => sum + sample.score, 0) / smoothed.length;
+  const topPeaks = sorted.filter((sample) => sample.score >= peak.score * 0.72);
+  const separatedPeaks = topPeaks.filter((sample, index) => topPeaks.findIndex((candidate) => Math.abs(candidate.time - sample.time) < 8) === index);
+  const montageLikely = duration > 30 && separatedPeaks.length >= 3;
+  const preRoll = montageLikely ? 0.9 : 1.3;
+  const postRoll = montageLikely ? 1.8 : 2.5;
+  const impactGuess = clamp(peak.time, 0, duration);
+  const start = clamp(impactGuess - preRoll, 0, duration);
+  const end = clamp(Math.max(impactGuess + postRoll, start + 2.2), 0, duration);
+
+  return {
+    impactGuess,
+    start,
+    end,
+    montageLikely,
+    confidence: Math.round(clamp(mapRange(peak.score / Math.max(baseline, 0.001), 1.4, 5.5, 28, 96), 24, 96)),
+  };
+}
+
+function measureSwingMotion(previousFrame, currentFrame, width, height) {
+  let weighted = 0;
+  let sampleCount = 0;
+  const centerLeft = width * 0.12;
+  const centerRight = width * 0.88;
+  const swingTop = height * 0.3;
+  const swingBottom = height * 0.92;
+
+  for (let y = Math.floor(swingTop); y < Math.floor(swingBottom); y += 2) {
+    for (let x = Math.floor(centerLeft); x < Math.floor(centerRight); x += 2) {
+      const index = (y * width + x) * 4;
+      const previousLuma =
+        previousFrame.data[index] * 0.299 +
+        previousFrame.data[index + 1] * 0.587 +
+        previousFrame.data[index + 2] * 0.114;
+      const currentLuma =
+        currentFrame.data[index] * 0.299 +
+        currentFrame.data[index + 1] * 0.587 +
+        currentFrame.data[index + 2] * 0.114;
+      const diff = Math.abs(currentLuma - previousLuma);
+      const verticalWeight = y > height * 0.56 ? 1.5 : y > height * 0.42 ? 1.18 : 0.82;
+      const horizontalWeight = x > width * 0.28 && x < width * 0.72 ? 1.28 : 1;
+      weighted += diff * verticalWeight * horizontalWeight;
+      sampleCount += 1;
+    }
+  }
+
+  return weighted / Math.max(sampleCount, 1);
 }
 
 function loadVideoMetadata(video) {
