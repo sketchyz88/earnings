@@ -1965,22 +1965,61 @@ function buildBroadcastTracePoints(start, launch, apex, carry, impactTime, fligh
     x: clamp(carry.x, safeApex.x + 5, 98),
     y: clamp(carry.y, safeApex.y + 6, 64),
   };
+  const tracerLaneX = clamp(lerp(safeApex.x, safeCarry.x, 0.2), safeApex.x + 1, Math.max(safeApex.x + 2, safeCarry.x));
   const exitPoint = {
-    x: clamp(Math.max(safeCarry.x + 7, safeApex.x + 12), 0, 100),
-    y: clamp(Math.min(safeCarry.y - 30, safeApex.y + 2), 0, 48),
+    x: clamp(tracerLaneX + 2.2, 0, 100),
+    y: clamp(Math.min(safeCarry.y - 38, safeApex.y + 3), 0, 40),
     time: impactTime + flightTime,
   };
+  const verticalLiftPoint = {
+    x: clamp(lerp(safeLaunch.x, tracerLaneX, 0.78), safeLaunch.x + 1, tracerLaneX),
+    y: clamp(lerp(safeStart.y, safeApex.y, 0.34), safeApex.y + 10, safeStart.y - 8),
+  };
+  const apexControl = {
+    x: clamp(tracerLaneX - 0.6, safeApex.x, tracerLaneX + 2),
+    y: clamp(safeApex.y + 1.2, safeApex.y, safeApex.y + 8),
+  };
+  const topHookControl = {
+    x: clamp(exitPoint.x - 1.8, tracerLaneX - 1, exitPoint.x),
+    y: clamp(lerp(safeCarry.y, exitPoint.y, 0.32), exitPoint.y + 2, safeCarry.y - 6),
+  };
+  const samples = [];
+  const sampleCount = 84;
 
-  return buildGolfFlightFromAnchors(
-    [
-      { ...safeStart, time: impactTime },
-      { ...safeLaunch, time: impactTime + flightTime * 0.18 },
-      { ...safeApex, time: impactTime + flightTime * 0.54 },
-      { ...safeCarry, time: impactTime + flightTime * 0.8 },
+  for (let index = 0; index < sampleCount; index += 1) {
+    const progress = index / Math.max(sampleCount - 1, 1);
+
+    if (progress <= 0.42) {
+      const localT = progress / 0.42;
+      const point = cubicBezierPoint(safeStart, safeLaunch, verticalLiftPoint, {
+        x: tracerLaneX - 1.2,
+        y: clamp(lerp(safeStart.y, safeApex.y, 0.64), safeApex.y + 6, safeStart.y - 12),
+      }, localT);
+      samples.push({
+        ...point,
+        time: impactTime + flightTime * progress,
+      });
+      continue;
+    }
+
+    const localT = (progress - 0.42) / 0.58;
+    const point = cubicBezierPoint(
+      {
+        x: tracerLaneX - 1.2,
+        y: clamp(lerp(safeStart.y, safeApex.y, 0.64), safeApex.y + 6, safeStart.y - 12),
+      },
+      apexControl,
+      topHookControl,
       exitPoint,
-    ],
-    96
-  );
+      localT
+    );
+    samples.push({
+      ...point,
+      time: impactTime + flightTime * progress,
+    });
+  }
+
+  return samples;
 }
 
 function buildDefaultShapeControls(start, apex, end, overrides = {}) {
