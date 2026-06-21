@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const PLAYBACK_PRESETS = [0.25, 0.5, 0.75, 1];
-const TRACE_TOP = -55;
+const TRACE_TOP = 0;
 const TRACE_BOTTOM = 100;
 const CAMERA_PROFILES = {
   range_tight: {
@@ -34,8 +34,9 @@ const CAMERA_PROFILES = {
     trackWindowSeconds: 2.05,
     initialVelocityX: 0.024,
     initialVelocityY: -0.046,
-    brightnessThreshold: 116,
+    brightnessThreshold: 96,
     diffThreshold: 24,
+    acceptScore: 42,
   },
 };
 const STEPS = [
@@ -86,6 +87,8 @@ function App() {
   const [sourceMode, setSourceMode] = useState("upload");
   const [videoAspect, setVideoAspect] = useState("16 / 9");
   const [videoOrientation, setVideoOrientation] = useState("landscape");
+  const [videoDimensions, setVideoDimensions] = useState({ width: 16, height: 9 });
+  const [stageDimensions, setStageDimensions] = useState({ width: 320, height: 180 });
   const [duration, setDuration] = useState(0);
   const [timelineValue, setTimelineValue] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(0.5);
@@ -100,6 +103,7 @@ function App() {
   const [detectStage, setDetectStage] = useState("Waiting for impact point.");
   const [detectStats, setDetectStats] = useState(null);
   const [detectPoints, setDetectPoints] = useState([]);
+  const [autoTracePoints, setAutoTracePoints] = useState([]);
   const [swingAssistState, setSwingAssistState] = useState("idle");
   const [swingAssistProgress, setSwingAssistProgress] = useState(0);
   const [swingWindow, setSwingWindow] = useState(null);
@@ -110,7 +114,9 @@ function App() {
 
   const [impactTime, setImpactTime] = useState(null);
   const [startPoint, setStartPoint] = useState(null);
+  const [launchPoint, setLaunchPoint] = useState(null);
   const [apexPoint, setApexPoint] = useState(null);
+  const [carryPoint, setCarryPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
   const [impactFrame, setImpactFrame] = useState(null);
   const [landingFrame, setLandingFrame] = useState(null);
@@ -138,26 +144,66 @@ function App() {
     const sample = params.get("sample");
     if (sample === "test-swing") {
       loadVideoSource("/test-swing.mov", "test-swing.mov", "sample", false);
+    } else if (sample === "golf-tryon") {
+      loadVideoSource("/golf-tryon.mp4", "golf-tryon.mp4", "sample", false);
     }
   }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (sampleSeedAppliedRef.current || !sourceUrl || duration <= 0) return;
-    if (params.get("sample") !== "test-swing" || params.get("seed") !== "putt56") return;
+    const sample = params.get("sample");
+    const seed = params.get("seed");
 
-    sampleSeedAppliedRef.current = true;
-    sampleAutoRunPendingRef.current = true;
-    setCameraProfile("range_tight");
-    setTimelineValue(56);
-    setImpactTime(56);
-    setImpactFrame(Math.round(56 * fps));
-    setStartPoint({ x: 49.2, y: 71.1 });
-    setStatus("Loaded test seed at impact. Running Track Assist Beta on the sample swing.");
+    if (sample === "test-swing" && seed === "putt56") {
+      sampleSeedAppliedRef.current = true;
+      sampleAutoRunPendingRef.current = true;
+      setCameraProfile("range_tight");
+      setTimelineValue(56);
+      setImpactTime(56);
+      setImpactFrame(Math.round(56 * fps));
+      setStartPoint({ x: 49.2, y: 71.1 });
+      setStatus("Loaded test seed at impact. Running Track Assist Beta on the sample swing.");
 
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 56;
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 56;
+      }
+      return;
+    }
+
+    if (sample === "golf-tryon" && seed === "tryon1") {
+      sampleSeedAppliedRef.current = true;
+      setCameraProfile("wide_fairway");
+      setShowTrackingLab(false);
+      setTimelineValue(6.25);
+      setImpactTime(6.25);
+      setImpactFrame(Math.round(6.25 * fps));
+      const seededStart = { x: 55.4, y: 79.2 };
+      const seededApex = { x: 73.8, y: 28.4 };
+      const seededEnd = { x: 93.2, y: 81.8 };
+      const seededControls = buildDefaultShapeControls(seededStart, seededApex, seededEnd, {
+        launchPoint: { x: 62.2, y: 59.8 },
+        carryPoint: { x: 84.1, y: 59.4 },
+      });
+      setStartPoint(seededStart);
+      setLaunchPoint(seededControls.launchPoint);
+      setApexPoint(seededApex);
+      setCarryPoint(seededControls.carryPoint);
+      setEndPoint(seededEnd);
+      setLandingFrame(Math.round(7.35 * fps));
+      setCurveSettings((current) => ({
+        ...current,
+        ballSpeed: 95.6,
+        flightTime: 1.34,
+        glow: 74,
+      }));
+      setStatus("Loaded the try-on seed for your course clip. Drag all five flight dots to shape the shot the way you want.");
+
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 6.25;
+      }
     }
   }, [duration, fps, sourceUrl]);
 
@@ -191,23 +237,26 @@ function App() {
 
   useEffect(() => {
     function handleResize() {
+      syncStageDimensions();
       updateFrameViewport();
     }
 
+    syncStageDimensions();
     updateFrameViewport();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [sourceUrl, videoAspect, shapeMode]);
+  }, [sourceUrl, videoAspect, shapeMode, videoDimensions]);
 
   const apexHandle = useMemo(() => {
     return apexPoint;
   }, [apexPoint]);
 
   const fullTracePoints = useMemo(() => {
+    if (autoTracePoints.length >= 3) return autoTracePoints;
     if (!startPoint || !apexPoint || !endPoint || impactTime == null) return [];
 
-    return buildManualTracePoints(startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime);
-  }, [startPoint, apexPoint, endPoint, impactTime, curveSettings.flightTime]);
+    return buildManualTracePoints(startPoint, launchPoint, apexPoint, carryPoint, endPoint, impactTime, curveSettings.flightTime);
+  }, [autoTracePoints, startPoint, launchPoint, apexPoint, carryPoint, endPoint, impactTime, curveSettings.flightTime]);
 
   const stageFullTracePoints = useMemo(() => fullTracePoints.map(mapLogicalPointToStagePoint), [fullTracePoints, frameViewport]);
 
@@ -215,11 +264,16 @@ function App() {
     if (!readyToTrace) return [];
     if (timelineValue < impactTime) return [];
 
-    const progress = clamp((timelineValue - impactTime) / curveSettings.flightTime, 0, 1);
-    const minimumPreview = isPlaying ? progress : Math.max(progress, activeStep === 3 ? 1 : 0);
-    const visibleCount = Math.max(2, Math.ceil(fullTracePoints.length * minimumPreview));
-    return fullTracePoints.slice(0, visibleCount);
-  }, [activeStep, curveSettings.flightTime, fullTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
+    if (fullTracePoints.length < 2) return fullTracePoints;
+
+    const previewTime = !isPlaying && activeStep === 3
+      ? fullTracePoints[fullTracePoints.length - 1]?.time ?? timelineValue
+      : timelineValue;
+    const visible = fullTracePoints.filter((point) => point.time <= previewTime);
+
+    if (visible.length >= 2) return visible;
+    return fullTracePoints.slice(0, 2);
+  }, [activeStep, fullTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
 
   const stageVisibleTracePoints = useMemo(() => visibleTracePoints.map(mapLogicalPointToStagePoint), [visibleTracePoints, frameViewport]);
 
@@ -231,14 +285,60 @@ function App() {
   const tracePath = useMemo(() => buildSmoothPath(stageVisibleTracePoints), [stageVisibleTracePoints]);
 
   const stageStartPoint = startPoint ? mapLogicalPointToStagePoint(startPoint) : null;
+  const stageLaunchPoint = launchPoint ? mapLogicalPointToStagePoint(launchPoint) : null;
   const stageApexPoint = apexPoint ? mapLogicalPointToStagePoint(apexPoint) : null;
+  const stageCarryPoint = carryPoint ? mapLogicalPointToStagePoint(carryPoint) : null;
   const stageEndPoint = endPoint ? mapLogicalPointToStagePoint(endPoint) : null;
   const stageDetectPoints = useMemo(() => detectPoints.map((point) => ({ ...mapLogicalPointToStagePoint(point), type: point.type })), [detectPoints, frameViewport]);
+  const traceTelemetry = useMemo(() => {
+    if (!startPoint || !launchPoint || !apexPoint || !endPoint) return null;
+
+    const rise = Math.max(startPoint.y - apexPoint.y, 0);
+    const run = Math.max(endPoint.x - startPoint.x, 1);
+    const launchRise = Math.max(startPoint.y - launchPoint.y, 0.1);
+    const launchRun = Math.max(launchPoint.x - startPoint.x, 0.1);
+    const launchAngle = Math.round((Math.atan2(launchRise, launchRun) * 180) / Math.PI);
+    const apexHeight = Math.round(mapRange(rise, 10, 50, 18, 122));
+    const carryEstimate = Math.round(mapRange(run, 12, 46, 92, 262));
+
+    return {
+      apexLabel: `${apexHeight} FT`,
+      speedLabel: `${curveSettings.ballSpeed.toFixed(1)} MPH`,
+      carryLabel: `${carryEstimate} YD`,
+      angleLabel: `${clamp(launchAngle, 8, 36)} DEG`,
+    };
+  }, [startPoint, launchPoint, apexPoint, endPoint, curveSettings.ballSpeed]);
+
+  function syncStageDimensions(nextWidth = videoDimensions.width, nextHeight = videoDimensions.height) {
+    if (typeof window === "undefined" || !nextWidth || !nextHeight) return;
+
+    const aspectRatio = nextWidth / Math.max(nextHeight, 1);
+    const compactViewport = window.innerWidth < 900;
+    const horizontalPadding = compactViewport ? 36 : 120;
+    const maxWidth = Math.max(260, window.innerWidth - horizontalPadding);
+    const preferredWidth = nextHeight > nextWidth ? (compactViewport ? maxWidth : 430) : (compactViewport ? maxWidth : 820);
+    const maxHeight = Math.max(260, Math.min(window.innerHeight * (compactViewport ? 0.52 : 0.72), compactViewport ? 560 : 760));
+
+    let fittedWidth = Math.min(maxWidth, preferredWidth);
+    let fittedHeight = fittedWidth / aspectRatio;
+
+    if (fittedHeight > maxHeight) {
+      fittedHeight = maxHeight;
+      fittedWidth = fittedHeight * aspectRatio;
+    }
+
+    setStageDimensions({
+      width: Math.round(fittedWidth),
+      height: Math.round(fittedHeight),
+    });
+  }
 
   function resetLoadedVideoState() {
     setDuration(0);
     setVideoAspect("16 / 9");
     setVideoOrientation("landscape");
+    setVideoDimensions({ width: 16, height: 9 });
+    setStageDimensions({ width: 320, height: 180 });
     setTimelineValue(0);
     setPlaybackRate(0.5);
     setIsPlaying(false);
@@ -251,6 +351,7 @@ function App() {
     setDetectStage("Waiting for impact point.");
     setDetectStats(null);
     setDetectPoints([]);
+    setAutoTracePoints([]);
     setSwingAssistState("idle");
     setSwingAssistProgress(0);
     setSwingWindow(null);
@@ -258,7 +359,9 @@ function App() {
     setImpactFrame(null);
     setLandingFrame(null);
     setStartPoint(null);
+    setLaunchPoint(null);
     setApexPoint(null);
+    setCarryPoint(null);
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
@@ -288,6 +391,7 @@ function App() {
     setDetectStage("Quick Trace mode is active. Mark the ball first, then mark landing.");
     setDetectStats(null);
     setDetectPoints([]);
+    setAutoTracePoints([]);
     setStatus("Quick Trace mode is active. Scrub to impact, mark the ball, then mark landing. Auto detect is optional after that.");
   }
 
@@ -456,64 +560,25 @@ function App() {
 
   function getFrameContentRect() {
     const frameBounds = videoFrameRef.current?.getBoundingClientRect();
-    const video = videoRef.current;
-    if (!frameBounds || !video) return null;
-
-    const frameAspect = frameBounds.width / Math.max(frameBounds.height, 1);
-    const videoAspectRatio = (video.videoWidth || 1) / Math.max(video.videoHeight || 1, 1);
-
-    if (!Number.isFinite(videoAspectRatio) || videoAspectRatio <= 0) {
-      return frameBounds;
-    }
-
-    if (frameAspect > videoAspectRatio) {
-      const contentHeight = frameBounds.height;
-      const contentWidth = contentHeight * videoAspectRatio;
-      const left = frameBounds.left + (frameBounds.width - contentWidth) / 2;
-      return {
-        left,
-        top: frameBounds.top,
-        width: contentWidth,
-        height: contentHeight,
-      };
-    }
-
-    const contentWidth = frameBounds.width;
-    const contentHeight = contentWidth / videoAspectRatio;
-    const top = frameBounds.top + (frameBounds.height - contentHeight) / 2;
-    return {
-      left: frameBounds.left,
-      top,
-      width: contentWidth,
-      height: contentHeight,
-    };
+    if (!frameBounds) return null;
+    return frameBounds;
   }
 
   function updateFrameViewport() {
-    const overlayBounds = overlayRef.current?.getBoundingClientRect();
-    const contentRect = getFrameContentRect();
-    if (!overlayBounds || !contentRect) return;
-
     setFrameViewport({
-      left: ((contentRect.left - overlayBounds.left) / overlayBounds.width) * 100,
-      top: ((contentRect.top - overlayBounds.top) / overlayBounds.height) * 100,
-      width: (contentRect.width / overlayBounds.width) * 100,
-      height: (contentRect.height / overlayBounds.height) * 100,
+      left: 0,
+      top: 0,
+      width: 100,
+      height: 100,
     });
   }
 
   function mapLogicalPointToStagePoint(point) {
     if (!point) return { x: 0, y: 0 };
 
-    const x = frameViewport.left + (point.x / 100) * frameViewport.width;
-    const y =
-      point.y >= 0
-        ? frameViewport.top + (point.y / 100) * frameViewport.height
-        : mapRange(point.y, TRACE_TOP, 0, 0, frameViewport.top);
-
     return {
-      x: clamp(x, 0, 100),
-      y: clamp(y, TRACE_TOP, 100),
+      x: clamp(point.x, 0, 100),
+      y: clamp(point.y, TRACE_TOP, 100),
     };
   }
 
@@ -526,24 +591,9 @@ function App() {
     const rawX = ((event.clientX - bounds.left) / bounds.width) * 100;
     const rawY = ((event.clientY - bounds.top) / bounds.height) * 100;
 
-    if (zone === "shape") {
-      const frameLeft = frameViewport.left;
-      const frameRight = frameViewport.left + frameViewport.width;
-      const normalizedX = mapRange(rawX, frameLeft, frameRight, 0, 100);
-      const normalizedY =
-        rawY <= frameViewport.top
-          ? mapRange(rawY, 0, Math.max(frameViewport.top, 0.001), TRACE_TOP, 0)
-          : mapRange(rawY, frameViewport.top, frameViewport.top + frameViewport.height, 0, 100);
-
-      return {
-        x: clamp(normalizedX, 0, 100),
-        y: clamp(normalizedY, TRACE_TOP, TRACE_BOTTOM),
-      };
-    }
-
     return {
       x: clamp(rawX, 0, 100),
-      y: clamp(rawY, 0, 100),
+      y: clamp(rawY, TRACE_TOP, TRACE_BOTTOM),
     };
   }
 
@@ -554,8 +604,11 @@ function App() {
     setDetectStage("Waiting for a new impact point.");
     setDetectStats(null);
     setDetectPoints([]);
+    setAutoTracePoints([]);
     setStartPoint(null);
+    setLaunchPoint(null);
     setApexPoint(null);
+    setCarryPoint(null);
     setEndPoint(null);
     setLandingFrame(null);
     setPlacementMode("start");
@@ -575,9 +628,12 @@ function App() {
       setImpactTime(time);
       setImpactFrame(Math.round(time * fps));
       setStartPoint(point);
+      setLaunchPoint(null);
       setApexPoint(null);
+      setCarryPoint(null);
       setDetectStats(null);
       setDetectPoints([]);
+      setAutoTracePoints([]);
       setPlacementMode(null);
       setSelectedHandle("start");
       setStatus("Start point locked. Step 2: scrub forward, tap Mark Landing, then tap where the ball lands or disappears.");
@@ -589,14 +645,19 @@ function App() {
       const time = videoRef.current?.currentTime ?? timelineValue;
       const flightTime = startPoint ? estimateFlightTime(startPoint, point, curveSettings.ballSpeed) : 1.25;
       setEndPoint(point);
-      if (startPoint && !apexPoint) {
-        setApexPoint(defaultApexFromShot(startPoint, point));
+      if (startPoint) {
+        const nextApex = apexPoint || defaultApexFromShot(startPoint, point);
+        const controls = buildDefaultShapeControls(startPoint, nextApex, point);
+        setApexPoint(nextApex);
+        setLaunchPoint(controls.launchPoint);
+        setCarryPoint(controls.carryPoint);
       }
       setLandingFrame(Math.round(time * fps));
       setCurveSettings((current) => ({ ...current, flightTime }));
+      setAutoTracePoints([]);
       setPlacementMode(null);
       setSelectedHandle("end");
-      setStatus("Trace is ready. Drag the white apex dot to shape the arc, or drag start/landing to correct the anchors.");
+      setStatus("Trace is ready. Drag the flight dots to shape launch, height, carry, and finish.");
       return;
     }
 
@@ -626,15 +687,46 @@ function App() {
       setDetectStage("Impact point moved. Auto detect is ready to re-run from the new ball position.");
       setDetectStats(null);
       setDetectPoints([]);
-      setStartPoint(point);
+      setAutoTracePoints([]);
+      const nextPoint = constrainHandlePoint("start", point, { startPoint, launchPoint, apexPoint, carryPoint, endPoint });
+      setStartPoint(nextPoint);
+      if (apexPoint && endPoint) {
+        const controls = buildDefaultShapeControls(nextPoint, apexPoint, endPoint);
+        setLaunchPoint(controls.launchPoint);
+        setCarryPoint(controls.carryPoint);
+      }
+      return;
+    }
+    if (dragRef.current === "launch") {
+      setAutoTracePoints([]);
+      setLaunchPoint(constrainHandlePoint("launch", point, { startPoint, launchPoint, apexPoint, carryPoint, endPoint }));
       return;
     }
     if (dragRef.current === "apex") {
-      setApexPoint(point);
+      setAutoTracePoints([]);
+      const nextPoint = constrainHandlePoint("apex", point, { startPoint, launchPoint, apexPoint, carryPoint, endPoint });
+      setApexPoint(nextPoint);
+      if (startPoint && endPoint) {
+        const controls = buildDefaultShapeControls(startPoint, nextPoint, endPoint);
+        setLaunchPoint((current) => current || controls.launchPoint);
+        setCarryPoint((current) => current || controls.carryPoint);
+      }
+      return;
+    }
+    if (dragRef.current === "carry") {
+      setAutoTracePoints([]);
+      setCarryPoint(constrainHandlePoint("carry", point, { startPoint, launchPoint, apexPoint, carryPoint, endPoint }));
       return;
     }
     if (dragRef.current === "end") {
-      setEndPoint(point);
+      setAutoTracePoints([]);
+      const nextPoint = constrainHandlePoint("end", point, { startPoint, launchPoint, apexPoint, carryPoint, endPoint });
+      setEndPoint(nextPoint);
+      if (startPoint && apexPoint) {
+        const controls = buildDefaultShapeControls(startPoint, apexPoint, nextPoint);
+        setLaunchPoint((current) => current || controls.launchPoint);
+        setCarryPoint((current) => current || controls.carryPoint);
+      }
       return;
     }
   }
@@ -650,11 +742,14 @@ function App() {
     setDetectStage("Waiting for impact point.");
     setDetectStats(null);
     setDetectPoints([]);
+    setAutoTracePoints([]);
     setImpactTime(null);
     setImpactFrame(null);
     setLandingFrame(null);
     setStartPoint(null);
+    setLaunchPoint(null);
     setApexPoint(null);
+    setCarryPoint(null);
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
@@ -670,6 +765,7 @@ function App() {
     setDetectStage("Preparing video frames...");
     setDetectStats(null);
     setDetectPoints([]);
+    setAutoTracePoints([]);
     setPlacementMode(null);
     setSelectedHandle(null);
     setStatus("Track Assist Beta is starting from your marked ball and following the first part of the flight.");
@@ -689,7 +785,10 @@ function App() {
       });
 
       const nextLandingFrame = Math.max(impactFrame ?? 0, Math.round(result.landingTime * fps));
+      const nextControls = buildDefaultShapeControls(startPoint, result.apexPoint, result.endPoint);
+      setLaunchPoint(nextControls.launchPoint);
       setApexPoint(result.apexPoint);
+      setCarryPoint(nextControls.carryPoint);
       setEndPoint(result.endPoint);
       setLandingFrame(nextLandingFrame);
       setCurveSettings((current) => ({
@@ -703,6 +802,7 @@ function App() {
         detectionsFound: result.detectionsFound,
       });
       setDetectPoints(result.debugPoints);
+      setAutoTracePoints(result.tracePoints);
       setDetectState("done");
       setDetectProgress(100);
       setSelectedHandle("apex");
@@ -723,6 +823,7 @@ function App() {
       setDetectProgress(0);
       setDetectStage("Analysis stopped before a usable flight path was found.");
       setDetectPoints([]);
+      setAutoTracePoints([]);
       setStatus("Track Assist Beta could not hold the ball on this clip. Keep using Mark Landing manually, or try a tighter/steadier clip.");
     }
   }
@@ -755,8 +856,8 @@ function App() {
     if (!context) return;
 
     context.drawImage(video, 0, 0, width, height);
-    context.strokeStyle = "#ff2d24";
-    context.shadowColor = "rgba(255, 45, 36, 0.88)";
+    context.strokeStyle = "#f07a24";
+    context.shadowColor = "rgba(109, 52, 14, 0.9)";
     context.shadowBlur = Math.max(18, width * 0.016);
     context.lineWidth = Math.max(8, width * 0.006);
     context.lineCap = "round";
@@ -948,7 +1049,11 @@ function App() {
                   shapeMode ? "shape-mode" : "",
                   videoOrientation === "portrait" ? "portrait-stage" : "landscape-stage",
                 ].filter(Boolean).join(" ")}
-                style={{ "--video-aspect": videoAspect }}
+                style={{
+                  "--video-aspect": videoAspect,
+                  width: `${stageDimensions.width}px`,
+                  height: `${stageDimensions.height}px`,
+                }}
               >
                 <div ref={videoFrameRef} className="video-frame">
                   <video
@@ -965,6 +1070,8 @@ function App() {
                       setDuration(nextDuration);
                       setVideoAspect(`${width} / ${height}`);
                       setVideoOrientation(height > width ? "portrait" : "landscape");
+                      setVideoDimensions({ width, height });
+                      syncStageDimensions(width, height);
                       setTimelineValue(0);
                       event.currentTarget.playbackRate = playbackRate;
                       if (modeLooksLikeCourseClip(nextDuration, width, height, sourceMode)) {
@@ -1030,8 +1137,19 @@ function App() {
                         <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
                       </>
                     ) : null}
+                    {!cinematicReplay && readyToTrace && traceTelemetry && stageApexPoint ? (
+                      <TraceTag point={{ x: stageApexPoint.x + 2.5, y: Math.max(stageApexPoint.y - 10, 8) }} tone="cool" label="APEX" value={traceTelemetry.apexLabel} />
+                    ) : null}
+                    {!cinematicReplay && readyToTrace && traceTelemetry && stageStartPoint ? (
+                      <TraceTag point={{ x: Math.max(stageStartPoint.x - 1, 14), y: Math.min(stageStartPoint.y + 9, 92) }} tone="warm" label="BALL SPEED" value={traceTelemetry.speedLabel} />
+                    ) : null}
+                    {!cinematicReplay && readyToTrace && traceTelemetry && stageCarryPoint ? (
+                      <TraceTag point={{ x: Math.min(stageCarryPoint.x + 6, 87), y: Math.min(stageCarryPoint.y + 4, 92) }} tone="cool" label="CARRY" value={traceTelemetry.carryLabel} />
+                    ) : null}
                     {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                    {!cinematicReplay && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
                     {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                    {!cinematicReplay && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
                     {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                   </svg>
                   {placementMode ? (
@@ -1186,7 +1304,11 @@ function App() {
                   shapeMode ? "shape-mode" : "",
                   videoOrientation === "portrait" ? "portrait-stage" : "landscape-stage",
                 ].filter(Boolean).join(" ")}
-                style={{ "--video-aspect": videoAspect }}
+                style={{
+                  "--video-aspect": videoAspect,
+                  width: `${stageDimensions.width}px`,
+                  height: `${stageDimensions.height}px`,
+                }}
               >
                 {sourceUrl ? (
                   <>
@@ -1272,7 +1394,9 @@ function App() {
                           </>
                         ) : null}
                         {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                        {!cinematicReplay && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
                         {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                        {!cinematicReplay && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
                         {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
                       {placementMode ? (
@@ -1565,7 +1689,7 @@ function App() {
                   <div className="shape-panel">
                     <RangeField label="Ball speed" value={curveSettings.ballSpeed} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, ballSpeed: value, flightTime: startPoint && endPoint ? estimateFlightTime(startPoint, endPoint, value) : current.flightTime }))} />
                     <RangeField label="Tracer glow" value={curveSettings.glow} min={20} max={100} disabled={!readyToTrace} onChange={(value) => setCurveSettings((current) => ({ ...current, glow: value }))} />
-                    <p className="shape-note">Use the dots for shape. Use speed for how fast the tracer appears during replay and export.</p>
+                    <p className="shape-note">Use all five dots to shape launch, bend, carry, and finish. Use speed for how fast the tracer appears during replay and export.</p>
                   </div>
 
                   <div className="speed-panel">
@@ -1584,7 +1708,9 @@ function App() {
 
                   <div className="anchor-grid">
                     <div><span>Impact</span><strong>{impactFrame ?? "--"}</strong></div>
+                    <div><span>Launch</span><strong>{launchPoint ? "Set" : "--"}</strong></div>
                     <div><span>Apex</span><strong>{apexPoint ? "Set" : "--"}</strong></div>
+                    <div><span>Carry</span><strong>{carryPoint ? "Set" : "--"}</strong></div>
                     <div><span>Landing</span><strong>{landingFrame ?? "--"}</strong></div>
                     <div><span>Flight</span><strong>{readyToTrace ? `${curveSettings.flightTime.toFixed(2)}s` : "--"}</strong></div>
                     <div><span>End</span><strong>{impactTime == null ? "--" : formatTime(flightEndTime)}</strong></div>
@@ -1621,6 +1747,17 @@ function TraceHandle({ point, type, active, onPointerDown }) {
       <circle cx={point.x} cy={point.y} r={active ? 3.1 : 2.45} />
       <circle cx={point.x} cy={point.y} r={0.72} />
     </g>
+  );
+}
+
+function TraceTag({ point, tone = "cool", label, value }) {
+  return (
+    <foreignObject x={point.x - 7} y={point.y - 4} width="22" height="10" className={`trace-tag-fo ${tone}`}>
+      <div className={`trace-tag ${tone}`}>
+        <span>{label}</span>
+        <strong>{value}</strong>
+      </div>
+    </foreignObject>
   );
 }
 
@@ -1770,20 +1907,223 @@ function defaultApexFromShot(start, end) {
   };
 }
 
-function buildManualTracePoints(start, apex, end, impactTime, flightTime) {
-  const points = [];
-  const totalSamples = 72;
+function buildManualTracePoints(start, launch, apex, carry, end, impactTime, flightTime) {
+  const shape = sanitizeFlightShape(start, launch, apex, carry, end);
+  const anchors = [
+    { ...shape.start, time: impactTime },
+    { ...shape.launchPoint, time: impactTime + flightTime * 0.18 },
+    { ...shape.apexPoint, time: impactTime + flightTime * 0.48 },
+    { ...shape.carryPoint, time: impactTime + flightTime * 0.76 },
+    { ...shape.endPoint, time: impactTime + flightTime },
+  ];
 
-  for (let index = 0; index <= totalSamples; index += 1) {
-    const t = index / totalSamples;
-    const point = quadraticPoint(start, apex, end, t);
-    points.push({
-      ...point,
-      time: impactTime + flightTime * t,
-    });
+  return buildGolfFlightFromAnchors(anchors, 120);
+}
+
+function buildDefaultShapeControls(start, apex, end, overrides = {}) {
+  const rise = Math.max(start.y - apex.y, 8);
+  const fall = Math.max(end.y - apex.y, 8);
+  const launchPoint = overrides.launchPoint || {
+    x: clamp(start.x + (apex.x - start.x) * 0.36, 0, 100),
+    y: clamp(start.y - rise * 0.48, TRACE_TOP, TRACE_BOTTOM),
+  };
+  const carryPoint = overrides.carryPoint || {
+    x: clamp(apex.x + (end.x - apex.x) * 0.44, 0, 100),
+    y: clamp(apex.y + fall * 0.58, TRACE_TOP, TRACE_BOTTOM),
+  };
+
+  return { launchPoint, carryPoint };
+}
+
+function constrainHandlePoint(handle, point, shape) {
+  const fallbackStart = shape.startPoint || { x: 48, y: 76 };
+  const fallbackEnd = shape.endPoint || { x: 84, y: 80 };
+  const fallbackApex = shape.apexPoint || defaultApexFromShot(fallbackStart, fallbackEnd);
+  const safeShape = sanitizeFlightShape(
+    fallbackStart,
+    shape.launchPoint,
+    fallbackApex,
+    shape.carryPoint,
+    fallbackEnd
+  );
+
+  if (handle === "start") {
+    return {
+      x: clamp(point.x, 0, Math.max((shape.endPoint?.x ?? 100) - 12, 40)),
+      y: clamp(point.y, 40, 92),
+    };
   }
 
-  return points;
+  if (handle === "end") {
+    return {
+      x: clamp(Math.max(point.x, safeShape.start.x + 10), 8, 100),
+      y: clamp(Math.max(point.y, safeShape.start.y - 6), 48, 96),
+    };
+  }
+
+  if (handle === "apex") {
+    return {
+      x: clamp(point.x, safeShape.start.x + 6, safeShape.endPoint.x - 6),
+      y: clamp(point.y, 6, Math.min(safeShape.start.y, safeShape.endPoint.y) - 12),
+    };
+  }
+
+  if (handle === "launch") {
+    return {
+      x: clamp(point.x, safeShape.start.x + 2, safeShape.apexPoint.x - 2),
+      y: clamp(point.y, safeShape.apexPoint.y + 5, safeShape.start.y - 4),
+    };
+  }
+
+  if (handle === "carry") {
+    return {
+      x: clamp(point.x, safeShape.apexPoint.x + 2, safeShape.endPoint.x - 2),
+      y: clamp(point.y, safeShape.apexPoint.y + 10, safeShape.endPoint.y - 2),
+    };
+  }
+
+  return point;
+}
+
+function sanitizeFlightShape(start, launch, apex, carry, end) {
+  const safeStart = {
+    x: clamp(start.x, 0, 100),
+    y: clamp(start.y, 40, 92),
+  };
+  const safeEnd = {
+    x: clamp(Math.max(end.x, safeStart.x + 10), 8, 100),
+    y: clamp(Math.max(end.y, safeStart.y - 6), 48, 96),
+  };
+  const safeApex = {
+    x: clamp(apex.x, safeStart.x + 6, safeEnd.x - 6),
+    y: clamp(apex.y, 6, Math.min(safeStart.y, safeEnd.y) - 12),
+  };
+  const defaults = buildDefaultShapeControls(safeStart, safeApex, safeEnd);
+  const safeLaunch = {
+    x: clamp((launch || defaults.launchPoint).x, safeStart.x + 2, safeApex.x - 2),
+    y: clamp((launch || defaults.launchPoint).y, safeApex.y + 5, safeStart.y - 4),
+  };
+  const safeCarry = {
+    x: clamp((carry || defaults.carryPoint).x, safeApex.x + 2, safeEnd.x - 2),
+    y: clamp((carry || defaults.carryPoint).y, safeApex.y + 10, safeEnd.y - 2),
+  };
+
+  return {
+    start: safeStart,
+    launchPoint: safeLaunch,
+    apexPoint: safeApex,
+    carryPoint: safeCarry,
+    endPoint: safeEnd,
+  };
+}
+
+function buildGolfFlightFromAnchors(anchors, targetSamples = 120) {
+  if (anchors.length < 2) return anchors;
+
+  const spline = sampleCatmullRomFlight(anchors, targetSamples);
+  const apexAnchorIndex = anchors.reduce((best, point, index) => (point.y < anchors[best].y ? index : best), 0);
+  const apexProgress = clamp(apexAnchorIndex / Math.max(anchors.length - 1, 1), 0.2, 0.8);
+
+  const blended = spline.map((point, index) => {
+    const progress = index / Math.max(spline.length - 1, 1);
+    const baselineY = sampleFlightEnvelopeY(anchors[0], anchors[2], anchors[4], progress, apexProgress);
+    const previous = spline[index - 1];
+    const x = previous ? Math.max(point.x, previous.x - 0.12) : point.x;
+
+    return {
+      x: clamp(x, 0, 100),
+      y: clamp(lerp(point.y, baselineY, 0.42), TRACE_TOP, TRACE_BOTTOM),
+      time: point.time,
+    };
+  });
+
+  return enforceFlightCurve(blended, anchors[0], anchors[4]);
+}
+
+function sampleCatmullRomFlight(points, targetSamples = 120) {
+  if (points.length < 2) return points;
+
+  const segmentCount = points.length - 1;
+  const samplesPerSegment = Math.max(8, Math.ceil(targetSamples / segmentCount));
+  const sampled = [];
+
+  for (let segment = 0; segment < segmentCount; segment += 1) {
+    const p0 = points[Math.max(0, segment - 1)];
+    const p1 = points[segment];
+    const p2 = points[segment + 1];
+    const p3 = points[Math.min(points.length - 1, segment + 2)];
+
+    for (let step = 0; step < samplesPerSegment; step += 1) {
+      if (segment > 0 && step === 0) continue;
+      const t = step / samplesPerSegment;
+      sampled.push(sampleCatmullRomPoint(p0, p1, p2, p3, t));
+    }
+  }
+
+  sampled.push({ ...points[points.length - 1] });
+  return sampled;
+}
+
+function sampleCatmullRomPoint(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+
+  return {
+    x: clamp(
+      0.5 *
+        ((2 * p1.x) +
+          (-p0.x + p2.x) * t +
+          (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+          (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+      0,
+      100
+    ),
+    y: clamp(
+      0.5 *
+        ((2 * p1.y) +
+          (-p0.y + p2.y) * t +
+          (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+          (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+      TRACE_TOP,
+      TRACE_BOTTOM
+    ),
+    time: lerp(p1.time, p2.time, t),
+  };
+}
+
+function sampleFlightEnvelopeY(start, apex, end, progress, apexProgress) {
+  if (progress <= apexProgress) {
+    const riseProgress = easeOutCubic(progress / Math.max(apexProgress, 0.001));
+    return lerp(start.y, apex.y, riseProgress);
+  }
+
+  const fallProgress = easeInQuad((progress - apexProgress) / Math.max(1 - apexProgress, 0.001));
+  return lerp(apex.y, end.y, fallProgress);
+}
+
+function enforceFlightCurve(points, start, end) {
+  if (points.length < 3) return points;
+
+  const output = points.map((point) => ({ ...point }));
+  let apexIndex = 0;
+  for (let index = 1; index < output.length; index += 1) {
+    if (output[index].y < output[apexIndex].y) apexIndex = index;
+  }
+
+  output[0] = { ...output[0], x: start.x, y: start.y };
+  output[output.length - 1] = { ...output[output.length - 1], x: end.x, y: end.y };
+
+  for (let index = 1; index <= apexIndex; index += 1) {
+    output[index].x = Math.max(output[index].x, output[index - 1].x - 0.1);
+    output[index].y = Math.min(output[index].y, output[index - 1].y + 0.2);
+  }
+
+  for (let index = apexIndex + 1; index < output.length; index += 1) {
+    output[index].x = Math.max(output[index].x, output[index - 1].x - 0.1);
+    output[index].y = Math.max(output[index].y, output[index - 1].y - 0.1);
+  }
+
+  return output;
 }
 
 function quadraticPoint(start, apex, end, t) {
@@ -1795,9 +2135,48 @@ function quadraticPoint(start, apex, end, t) {
   };
 }
 
+function cubicBezierPoint(start, controlA, controlB, end, t) {
+  const inv = 1 - t;
+
+  return {
+    x: clamp(
+      inv * inv * inv * start.x +
+        3 * inv * inv * t * controlA.x +
+        3 * inv * t * t * controlB.x +
+        t * t * t * end.x,
+      0,
+      100
+    ),
+    y: clamp(
+      inv * inv * inv * start.y +
+        3 * inv * inv * t * controlA.y +
+        3 * inv * t * t * controlB.y +
+        t * t * t * end.y,
+      TRACE_TOP,
+      TRACE_BOTTOM
+    ),
+  };
+}
+
 function mapRange(value, inMin, inMax, outMin, outMax) {
   if (inMax === inMin) return outMin;
   return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function easeOutCubic(value) {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function easeInQuad(value) {
+  return value * value;
+}
+
+function easeInOutSine(value) {
+  return -(Math.cos(Math.PI * clamp(value, 0, 1)) - 1) / 2;
 }
 
 function estimateFlightTime(start, end, speed) {
@@ -1920,23 +2299,31 @@ async function trackBallFromSeed(video, seed, onUpdate) {
   }
 
   const smoothedDetections = smoothDetections(detections);
-  const normalizedEnd = normalizePoint(estimateExitPoint(smoothedDetections, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
-  const normalizedApex = estimateApexPoint(smoothedDetections, startPoint, normalizedEnd, sampleWidth, sampleHeight);
-  const lastDetectionTime = smoothedDetections[smoothedDetections.length - 1]?.time ?? impactTime + 1;
+  const primaryFlightDetections = keepPrimaryFlightDetections(smoothedDetections, sampleHeight);
+  const normalizedEnd = normalizePoint(estimateExitPoint(primaryFlightDetections, sampleWidth, sampleHeight, startPoint), sampleWidth, sampleHeight);
+  const normalizedApex = estimateApexPoint(primaryFlightDetections, startPoint, normalizedEnd, sampleWidth, sampleHeight);
+  const lastDetectionTime = primaryFlightDetections[primaryFlightDetections.length - 1]?.time ?? impactTime + 1;
   const flightTime = clamp(lastDetectionTime - impactTime + 0.34, 0.65, 3.4);
-  const confidence = computeDetectConfidence(smoothedDetections, sampleWidth, sampleHeight, true);
+  const landingTime = Math.min(impactTime + flightTime, video.duration || impactTime + flightTime);
+  const confidence = computeDetectConfidence(primaryFlightDetections, sampleWidth, sampleHeight, true);
+  const tracePoints = buildTrackedTracePoints(startPoint, primaryFlightDetections, sampleWidth, sampleHeight, impactTime, landingTime);
+
+  if (!isPlausibleFlightPath(tracePoints)) {
+    throw new Error("Tracked path failed golf-flight sanity checks.");
+  }
 
   return {
     impactTime,
-    landingTime: Math.min(impactTime + flightTime, video.duration || impactTime + flightTime),
+    landingTime,
     apexPoint: normalizedApex,
     endPoint: normalizedEnd,
     flightTime,
     confidence,
     framesScanned: trackFrameCount,
-    detectionsFound: smoothedDetections.length,
+    detectionsFound: primaryFlightDetections.length,
     stage: "Analysis complete. Review the first pass and drag the dots if the tracer needs correction.",
-    debugPoints: buildDebugPoints(smoothedDetections, sampleWidth, sampleHeight),
+    debugPoints: buildDebugPoints(primaryFlightDetections, sampleWidth, sampleHeight),
+    tracePoints,
   };
 }
 
@@ -1974,7 +2361,11 @@ function findSeededBallCandidate(previousFrame, currentFrame, width, height, las
         Math.abs(blue - previousFrame.data[index + 2]);
 
       const greenAdvantage = green - Math.max(red, blue);
-      if (brightness < (profile?.brightnessThreshold || 122) || diff < (profile?.diffThreshold || 34) || greenAdvantage > 34) continue;
+      const isSkyRegion = y < height * 0.68;
+      const brightBall = brightness >= (profile?.brightnessThreshold || 122);
+      const darkSkyBall = isSkyRegion && brightness >= 55 && brightness <= 185 && diff >= (profile?.diffThreshold || 34) * 1.9;
+      const brightGrassBall = !isSkyRegion && brightness >= (profile?.brightnessThreshold || 122) - 18 && diff >= (profile?.diffThreshold || 34) * 1.25;
+      if ((!brightBall && !darkSkyBall && !brightGrassBall) || diff < (profile?.diffThreshold || 34) || greenAdvantage > 34) continue;
 
       const cellX = Math.floor(x / cellSize);
       const cellY = Math.floor(y / cellSize);
@@ -2001,6 +2392,8 @@ function findSeededBallCandidate(previousFrame, currentFrame, width, height, las
     score -= x < lastDetection.x - width * 0.02 ? 24 : 0;
     score -= y > lastDetection.y + height * 0.04 ? 18 : 0;
     score += frameIndex < 5 && y < lastDetection.y ? 18 : 0;
+    score += y < height * 0.68 ? 12 : 0;
+    score += cell.count <= 8 ? 10 : 0;
 
     if (!best || score > best.score) {
       best = {
@@ -2012,7 +2405,7 @@ function findSeededBallCandidate(previousFrame, currentFrame, width, height, las
     }
   });
 
-  return best && best.score > 64 ? best : null;
+  return best && best.score > (profile?.acceptScore || 64) ? best : null;
 }
 
 function smoothDetections(detections) {
@@ -2028,29 +2421,55 @@ function smoothDetections(detections) {
   });
 }
 
-function estimateExitPoint(detections, width, height) {
+function keepPrimaryFlightDetections(detections, height) {
+  if (detections.length < 4) return detections;
+
+  let highestIndex = 0;
+  for (let index = 1; index < detections.length; index += 1) {
+    if (detections[index].y < detections[highestIndex].y) {
+      highestIndex = index;
+    }
+  }
+
+  const cutoffIndex = Math.max(2, highestIndex);
+  const kept = detections.slice(0, cutoffIndex + 1);
+
+  if (kept.length >= 2) {
+    const last = kept[kept.length - 1];
+    const previous = kept[kept.length - 2];
+    const dropAfterPeak = detections[cutoffIndex + 1];
+
+    if (
+      dropAfterPeak &&
+      dropAfterPeak.x >= previous.x &&
+      dropAfterPeak.y <= last.y + height * 0.012
+    ) {
+      kept.push(dropAfterPeak);
+    }
+  }
+
+  return kept.length >= 3 ? kept : detections.slice(0, Math.min(4, detections.length));
+}
+
+function estimateExitPoint(detections, width, height, startPoint) {
   const last = detections[detections.length - 1];
   const previous = detections[detections.length - 2] || last;
   const velocity = {
     x: last.x - previous.x,
     y: last.y - previous.y,
   };
-  let projected = { x: last.x, y: last.y };
-
-  for (let step = 1; step <= 18; step += 1) {
-    projected = {
-      x: last.x + velocity.x * step,
-      y: last.y + velocity.y * step,
-    };
-
-    if (projected.x < 0 || projected.x > width || projected.y < 0 || projected.y > height) {
-      break;
-    }
-  }
-
+  const startPx = denormalizePoint(startPoint, width, height);
+  const projected = {
+    x: clamp(last.x + Math.max(velocity.x * 5.2, width * 0.1), 0, width),
+    y: clamp(
+      Math.max(last.y + Math.max(Math.abs(velocity.y) * 7.5, height * 0.22), startPx.y + height * 0.02),
+      height * 0.54,
+      height * 0.96
+    ),
+  };
   return {
-    x: clamp(projected.x, 0, width),
-    y: clamp(projected.y, 0, height),
+    x: projected.x,
+    y: projected.y,
   };
 }
 
@@ -2097,6 +2516,100 @@ function buildDebugPoints(detections, width, height) {
   });
 }
 
+function buildTrackedTracePoints(startPoint, detections, width, height, impactTime, landingTime) {
+  const normalizedDetections = detections.map((point) => ({
+    ...normalizePoint(point, width, height),
+    time: point.time,
+  }));
+
+  const anchors = [{ ...startPoint, time: impactTime }, ...normalizedDetections];
+  if (anchors.length < 2) return anchors;
+
+  const last = anchors[anchors.length - 1];
+  const projectedEnd = estimateTrackedTraceEnd(anchors, landingTime, startPoint);
+
+  if (projectedEnd.time > last.time + 0.01) {
+    anchors.push({
+      x: lerp(last.x, projectedEnd.x, 0.45),
+      y: lerp(last.y, projectedEnd.y, 0.45),
+      time: lerp(last.time, projectedEnd.time, 0.45),
+    });
+    anchors.push(projectedEnd);
+  }
+
+  return densifyTimedTracePoints(anchors, 96);
+}
+
+function estimateTrackedTraceEnd(points, landingTime, startPoint) {
+  const last = points[points.length - 1];
+  const previous = points[points.length - 2] || last;
+  const velocityX = last.x - previous.x;
+  const carryX = Math.max(velocityX * 3.6, 10);
+  const groundY = clamp(Math.max(startPoint.y + 2, last.y + 18), 54, 96);
+
+  return {
+    x: clamp(last.x + carryX, 0, 100),
+    y: groundY,
+    time: landingTime,
+  };
+}
+
+function densifyTimedTracePoints(points, targetSamples = 96) {
+  if (points.length < 2) return points;
+
+  const timedPoints = [];
+  for (let index = 0; index < targetSamples; index += 1) {
+    const progress = index / Math.max(targetSamples - 1, 1);
+    const position = progress * (points.length - 1);
+    const baseIndex = Math.min(points.length - 2, Math.floor(position));
+    const localT = easeInOutSine(position - baseIndex);
+    const from = points[baseIndex];
+    const to = points[baseIndex + 1];
+
+    timedPoints.push({
+      x: lerp(from.x, to.x, localT),
+      y: lerp(from.y, to.y, localT),
+      time: lerp(from.time, to.time, localT),
+    });
+  }
+
+  return timedPoints;
+}
+
+function isPlausibleFlightPath(points) {
+  if (!points || points.length < 4) return false;
+
+  let highestIndex = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    if (points[index].y < points[highestIndex].y) highestIndex = index;
+  }
+
+  if (highestIndex < 1 || highestIndex > points.length - 2) return false;
+
+  let backwardMoves = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    if (points[index].x < points[index - 1].x - 0.8) backwardMoves += 1;
+  }
+
+  if (backwardMoves > 1) return false;
+
+  let ascentBreaks = 0;
+  for (let index = 1; index <= highestIndex; index += 1) {
+    if (points[index].y > points[index - 1].y + 1.6) ascentBreaks += 1;
+  }
+
+  let descentBreaks = 0;
+  for (let index = highestIndex + 1; index < points.length; index += 1) {
+    if (points[index].y < points[index - 1].y - 1.6) descentBreaks += 1;
+  }
+
+  if (ascentBreaks > 2 || descentBreaks > 2) return false;
+  if (points[points.length - 1].y < points[0].y - 6) return false;
+  if (points[points.length - 1].y < points[highestIndex].y + 12) return false;
+
+  return true;
+}
+
 function computeDetectConfidence(detections, width, height, seeded = false) {
   const averageScore = detections.reduce((sum, detection) => sum + (detection.score || 0), 0) / Math.max(detections.length, 1);
   const pathSpread = detections.length > 1
@@ -2127,8 +2640,8 @@ function drawExportFrame(context, video, fullTracePoints, settings) {
 
     if (visiblePoints.length > 1) {
       context.save();
-      context.strokeStyle = "#ff2d24";
-      context.shadowColor = "rgba(255, 45, 36, 0.9)";
+      context.strokeStyle = "#f07a24";
+      context.shadowColor = "rgba(109, 52, 14, 0.92)";
       context.shadowBlur = Math.max(18, width * 0.018) * (glow / 100);
       context.lineWidth = Math.max(7, width * 0.006);
       context.lineCap = "round";
@@ -2177,10 +2690,19 @@ function buildSmoothPath(points) {
   if (points.length === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
 
   let path = `M ${points[0].x} ${points[0].y}`;
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const p2 = points[index + 1];
-    path += ` L ${p2.x} ${p2.y}`;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    const controlX = current.x;
+    const controlY = current.y;
+    const endX = (current.x + next.x) / 2;
+    const endY = (current.y + next.y) / 2;
+    path += ` Q ${controlX} ${controlY} ${endX} ${endY}`;
   }
+
+  const penultimate = points[points.length - 2];
+  const last = points[points.length - 1];
+  path += ` Q ${penultimate.x} ${penultimate.y} ${last.x} ${last.y}`;
   return path;
 }
 
@@ -2189,9 +2711,31 @@ function drawSmoothCanvasPath(context, points, width, height) {
   context.beginPath();
   context.moveTo((points[0].x / 100) * width, (points[0].y / 100) * height);
 
-  for (let index = 1; index < points.length; index += 1) {
-    context.lineTo((points[index].x / 100) * width, (points[index].y / 100) * height);
+  if (points.length === 2) {
+    context.lineTo((points[1].x / 100) * width, (points[1].y / 100) * height);
+    context.stroke();
+    return;
   }
+
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    context.quadraticCurveTo(
+      (current.x / 100) * width,
+      (current.y / 100) * height,
+      ((current.x + next.x) / 200) * width,
+      ((current.y + next.y) / 200) * height
+    );
+  }
+
+  const penultimate = points[points.length - 2];
+  const last = points[points.length - 1];
+  context.quadraticCurveTo(
+    (penultimate.x / 100) * width,
+    (penultimate.y / 100) * height,
+    (last.x / 100) * width,
+    (last.y / 100) * height
+  );
   context.stroke();
 }
 
