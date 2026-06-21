@@ -122,6 +122,7 @@ function App() {
   const [landingFrame, setLandingFrame] = useState(null);
   const [placementMode, setPlacementMode] = useState(null);
   const [selectedHandle, setSelectedHandle] = useState(null);
+  const [editingTrace, setEditingTrace] = useState(false);
   const [fps, setFps] = useState(60);
   const [curveSettings, setCurveSettings] = useState({
     ballSpeed: 62,
@@ -258,22 +259,28 @@ function App() {
     return buildManualTracePoints(startPoint, launchPoint, apexPoint, carryPoint, endPoint, impactTime, curveSettings.flightTime);
   }, [autoTracePoints, startPoint, launchPoint, apexPoint, carryPoint, endPoint, impactTime, curveSettings.flightTime]);
 
-  const stageFullTracePoints = useMemo(() => fullTracePoints.map(mapLogicalPointToStagePoint), [fullTracePoints, frameViewport]);
+  const displayTracePoints = useMemo(() => {
+    if (!readyToTrace) return [];
+    if (editingTrace || autoTracePoints.length >= 3) return fullTracePoints;
+    return buildBroadcastTracePoints(startPoint, launchPoint, apexPoint, carryPoint, impactTime, curveSettings.flightTime);
+  }, [readyToTrace, editingTrace, autoTracePoints.length, fullTracePoints, startPoint, launchPoint, apexPoint, carryPoint, impactTime, curveSettings.flightTime]);
+
+  const stageFullTracePoints = useMemo(() => displayTracePoints.map(mapLogicalPointToStagePoint), [displayTracePoints, frameViewport]);
 
   const visibleTracePoints = useMemo(() => {
     if (!readyToTrace) return [];
     if (timelineValue < impactTime) return [];
 
-    if (fullTracePoints.length < 2) return fullTracePoints;
+    if (displayTracePoints.length < 2) return displayTracePoints;
 
     const previewTime = !isPlaying && activeStep === 3
-      ? fullTracePoints[fullTracePoints.length - 1]?.time ?? timelineValue
+      ? displayTracePoints[displayTracePoints.length - 1]?.time ?? timelineValue
       : timelineValue;
-    const visible = fullTracePoints.filter((point) => point.time <= previewTime);
+    const visible = displayTracePoints.filter((point) => point.time <= previewTime);
 
     if (visible.length >= 2) return visible;
-    return fullTracePoints.slice(0, 2);
-  }, [activeStep, fullTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
+    return displayTracePoints.slice(0, 2);
+  }, [activeStep, displayTracePoints, impactTime, isPlaying, readyToTrace, timelineValue]);
 
   const stageVisibleTracePoints = useMemo(() => visibleTracePoints.map(mapLogicalPointToStagePoint), [visibleTracePoints, frameViewport]);
 
@@ -290,6 +297,7 @@ function App() {
   const stageCarryPoint = carryPoint ? mapLogicalPointToStagePoint(carryPoint) : null;
   const stageEndPoint = endPoint ? mapLogicalPointToStagePoint(endPoint) : null;
   const stageDetectPoints = useMemo(() => detectPoints.map((point) => ({ ...mapLogicalPointToStagePoint(point), type: point.type })), [detectPoints, frameViewport]);
+  const showTraceHandles = Boolean(editingTrace || placementMode || !readyToTrace);
   const traceTelemetry = useMemo(() => {
     if (!startPoint || !launchPoint || !apexPoint || !endPoint) return null;
 
@@ -365,6 +373,7 @@ function App() {
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
+    setEditingTrace(false);
     sampleSeedAppliedRef.current = false;
     sampleAutoRunPendingRef.current = false;
     swingAssistAutoRunRef.current = false;
@@ -636,6 +645,7 @@ function App() {
       setAutoTracePoints([]);
       setPlacementMode(null);
       setSelectedHandle("start");
+      setEditingTrace(true);
       setStatus("Start point locked. Step 2: scrub forward, tap Mark Landing, then tap where the ball lands or disappears.");
       return;
     }
@@ -657,6 +667,7 @@ function App() {
       setAutoTracePoints([]);
       setPlacementMode(null);
       setSelectedHandle("end");
+      setEditingTrace(false);
       setStatus("Trace is ready. Drag the flight dots to shape launch, height, carry, and finish.");
       return;
     }
@@ -666,6 +677,7 @@ function App() {
       setApexPoint(point);
       setPlacementMode(null);
       setSelectedHandle("apex");
+      setEditingTrace(true);
       setStatus(endPoint ? "Apex updated. Replay or export when the arc matches the shot." : "Apex saved. Now set the landing point.");
     }
   }
@@ -674,6 +686,7 @@ function App() {
     event.stopPropagation();
     dragRef.current = handle;
     setSelectedHandle(handle);
+    setEditingTrace(true);
   }
 
   function moveDraggedHandle(event) {
@@ -753,6 +766,7 @@ function App() {
     setEndPoint(null);
     setPlacementMode(null);
     setSelectedHandle(null);
+    setEditingTrace(false);
     setStatus("Trace reset. Scrub to impact and place the start, apex, and landing points again.");
   }
 
@@ -806,6 +820,7 @@ function App() {
       setDetectState("done");
       setDetectProgress(100);
       setSelectedHandle("apex");
+      setEditingTrace(false);
       setTimelineValue(impactTime);
 
       if (videoRef.current) {
@@ -1130,27 +1145,27 @@ function App() {
                         className={point.type === "projected" ? "track-point projected" : "track-point detected"}
                       />
                     ))}
-                    {!cinematicReplay && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
+                    {!cinematicReplay && editingTrace && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                     {tracePath ? (
                       <>
                         <path d={tracePath} className="trace-line-shadow" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
                         <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
                       </>
                     ) : null}
-                    {!cinematicReplay && readyToTrace && traceTelemetry && stageApexPoint ? (
+                    {!cinematicReplay && !editingTrace && readyToTrace && traceTelemetry && stageApexPoint ? (
                       <TraceTag point={{ x: stageApexPoint.x + 2.5, y: Math.max(stageApexPoint.y - 10, 8) }} tone="cool" label="APEX" value={traceTelemetry.apexLabel} />
                     ) : null}
-                    {!cinematicReplay && readyToTrace && traceTelemetry && stageStartPoint ? (
+                    {!cinematicReplay && !editingTrace && readyToTrace && traceTelemetry && stageStartPoint ? (
                       <TraceTag point={{ x: Math.max(stageStartPoint.x - 1, 14), y: Math.min(stageStartPoint.y + 9, 92) }} tone="warm" label="BALL SPEED" value={traceTelemetry.speedLabel} />
                     ) : null}
-                    {!cinematicReplay && readyToTrace && traceTelemetry && stageCarryPoint ? (
+                    {!cinematicReplay && !editingTrace && readyToTrace && traceTelemetry && stageCarryPoint ? (
                       <TraceTag point={{ x: Math.min(stageCarryPoint.x + 6, 87), y: Math.min(stageCarryPoint.y + 4, 92) }} tone="cool" label="CARRY" value={traceTelemetry.carryLabel} />
                     ) : null}
-                    {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
-                    {!cinematicReplay && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
-                    {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
-                    {!cinematicReplay && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
-                    {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
+                    {!cinematicReplay && showTraceHandles && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                    {!cinematicReplay && showTraceHandles && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
+                    {!cinematicReplay && showTraceHandles && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                    {!cinematicReplay && showTraceHandles && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
+                    {!cinematicReplay && showTraceHandles && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                   </svg>
                   {placementMode ? (
                     <div className="placement-banner">
@@ -1169,6 +1184,9 @@ function App() {
                 <button className="secondary-button" type="button" onClick={togglePlayback} disabled={!sourceUrl}>{isPlaying ? "Pause" : "Play"}</button>
                 <button className="secondary-button" type="button" onClick={() => stepFrame(-1)} disabled={!sourceUrl}>Frame -</button>
                 <button className="secondary-button" type="button" onClick={() => stepFrame(1)} disabled={!sourceUrl}>Frame +</button>
+                <button className="secondary-button" type="button" onClick={() => setEditingTrace((current) => !current)} disabled={!readyToTrace}>
+                  {editingTrace ? "Preview Trace" : "Edit Trace"}
+                </button>
                 <button className="primary-button" type="button" onClick={replayTrace} disabled={!readyToTrace}>Replay Trace</button>
               </div>
 
@@ -1386,18 +1404,18 @@ function App() {
                             className={point.type === "projected" ? "track-point projected" : "track-point detected"}
                           />
                         ))}
-                        {!cinematicReplay && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
+                        {!cinematicReplay && editingTrace && guidePath ? <path d={guidePath} className="trace-guide" /> : null}
                         {tracePath ? (
                           <>
                             <path d={tracePath} className="trace-line-shadow" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
                             <path d={tracePath} className="trace-line" style={{ "--trace-glow": `${curveSettings.glow / 100}` }} />
                           </>
                         ) : null}
-                        {!cinematicReplay && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
-                        {!cinematicReplay && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
-                        {!cinematicReplay && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
-                        {!cinematicReplay && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
-                        {!cinematicReplay && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
+                        {!cinematicReplay && showTraceHandles && stageStartPoint ? <TraceHandle point={stageStartPoint} type="start" active={selectedHandle === "start"} onPointerDown={(event) => beginDrag(event, "start")} /> : null}
+                        {!cinematicReplay && showTraceHandles && stageLaunchPoint ? <TraceHandle point={stageLaunchPoint} type="launch" active={selectedHandle === "launch"} onPointerDown={(event) => beginDrag(event, "launch")} /> : null}
+                        {!cinematicReplay && showTraceHandles && stageApexPoint ? <TraceHandle point={stageApexPoint} type="apex" active={selectedHandle === "apex"} onPointerDown={(event) => beginDrag(event, "apex")} /> : null}
+                        {!cinematicReplay && showTraceHandles && stageCarryPoint ? <TraceHandle point={stageCarryPoint} type="carry" active={selectedHandle === "carry"} onPointerDown={(event) => beginDrag(event, "carry")} /> : null}
+                        {!cinematicReplay && showTraceHandles && stageEndPoint ? <TraceHandle point={stageEndPoint} type="end" active={selectedHandle === "end"} onPointerDown={(event) => beginDrag(event, "end")} /> : null}
                       </svg>
                       {placementMode ? (
                         <div className="placement-banner">
@@ -1425,6 +1443,9 @@ function App() {
                 <button className="secondary-button" type="button" onClick={togglePlayback} disabled={!sourceUrl}>{isPlaying ? "Pause" : "Play"}</button>
                 <button className="secondary-button" type="button" onClick={() => stepFrame(-1)} disabled={!sourceUrl}>Frame -</button>
                 <button className="secondary-button" type="button" onClick={() => stepFrame(1)} disabled={!sourceUrl}>Frame +</button>
+                <button className="secondary-button" type="button" onClick={() => setEditingTrace((current) => !current)} disabled={!readyToTrace}>
+                  {editingTrace ? "Preview Trace" : "Edit Trace"}
+                </button>
                 <button className="primary-button" type="button" onClick={replayTrace} disabled={!readyToTrace}>Replay Trace</button>
               </div>
 
@@ -1918,6 +1939,48 @@ function buildManualTracePoints(start, launch, apex, carry, end, impactTime, fli
   ];
 
   return buildGolfFlightFromAnchors(anchors, 120);
+}
+
+function buildBroadcastTracePoints(start, launch, apex, carry, impactTime, flightTime) {
+  if (!start || !apex || !carry || impactTime == null) return [];
+
+  const safeStart = {
+    x: clamp(start.x, 0, 100),
+    y: clamp(start.y, 40, 92),
+  };
+  const safeLaunch = launch
+    ? {
+        x: clamp(launch.x, safeStart.x + 2, 96),
+        y: clamp(launch.y, 12, safeStart.y - 4),
+      }
+    : {
+        x: clamp(safeStart.x + 6, 0, 96),
+        y: clamp(safeStart.y - 20, 12, 88),
+      };
+  const safeApex = {
+    x: clamp(apex.x, safeLaunch.x + 4, 96),
+    y: clamp(apex.y, 4, Math.min(safeLaunch.y, safeStart.y) - 10),
+  };
+  const safeCarry = {
+    x: clamp(carry.x, safeApex.x + 5, 98),
+    y: clamp(carry.y, safeApex.y + 6, 64),
+  };
+  const exitPoint = {
+    x: clamp(Math.max(safeCarry.x + 7, safeApex.x + 12), 0, 100),
+    y: clamp(Math.min(safeCarry.y - 30, safeApex.y + 2), 0, 48),
+    time: impactTime + flightTime,
+  };
+
+  return buildGolfFlightFromAnchors(
+    [
+      { ...safeStart, time: impactTime },
+      { ...safeLaunch, time: impactTime + flightTime * 0.18 },
+      { ...safeApex, time: impactTime + flightTime * 0.54 },
+      { ...safeCarry, time: impactTime + flightTime * 0.8 },
+      exitPoint,
+    ],
+    96
+  );
 }
 
 function buildDefaultShapeControls(start, apex, end, overrides = {}) {
